@@ -1,0 +1,52 @@
+{
+  "hair-1": {
+    "foreheadY": 0.022685185185185187,
+    "faceCenterX": 0.5041666666666667,
+    "faceWidthRatio": 0.525
+  },
+  "hair-2": {
+    "foreheadY": 0.07824074074074074,
+    "faceCenterX": 0.49722222222222223,
+    "faceWidthRatio": 0.5462962962962963
+  },
+  "hair-3": {
+    "foreheadY": 0.05775,
+    "faceCenterX": 0.4995,
+    "faceWidthRatio": 0.545
+  },
+  "hair-4": {
+    "foreheadY": 0.11675,
+    "faceCenterX": 0.50975,
+    "faceWidthRatio": 0.5545
+  },
+  "hair-5": {
+    "foreheadY": 0.00925,
+    "faceCenterX": 0.49675,
+    "faceWidthRatio": 0.539
+  },
+  "hair-6": {
+    "foreheadY": 0.04825,
+    "faceCenterX": 0.51375,
+    "faceWidthRatio": 0.503
+  },
+  "hair-7": {
+    "foreheadY": 0.01225,
+    "faceCenterX": 0.5105,
+    "faceWidthRatio": 0.511
+  },
+  "hair-8": {
+    "foreheadY": 0.03125,
+    "faceCenterX": 0.492,
+    "faceWidthRatio": 0.521
+  },
+  "hair-9": {
+    "foreheadY": 0.03675,
+    "faceCenterX": 0.49975,
+    "faceWidthRatio": 0.493
+  },
+  "hair-10": {
+    "foreheadY": 0.07275,
+    "faceCenterX": 0.50825,
+    "faceWidthRatio": 0.5245
+  }
+}

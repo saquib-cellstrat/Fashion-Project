@@ -1,0 +1,18 @@
+export const routes = {
+  home: "/",
+  editor: "/editor",
+  editorNew: "/editor/new",
+  editorHistory: "/editor/history",
+  editorAssets: "/editor/assets",
+  feed: "/feed",
+  discover: "/discover",
+  trending: "/trending",
+  signIn: "/sign-in",
+  signUp: "/sign-up",
+  onboarding: "/onboarding",
+  onboardingProfile: "/onboarding/profile",
+  onboardingPhoto: "/onboarding/photo",
+  profile: (handle: string) => `/u/${handle}`,
+  savedHairstyles: "/saved-hairstyles",
+  accountSettings: "/settings/account",
+} as const;
