@@ -207,21 +207,228 @@ function boxBlurAlpha(alpha: Uint8ClampedArray, width: number, height: number, r
   return out;
 }
 
+function normalizeMaskValue(value: number, isUintMask: boolean) {
+  if (!isUintMask) return clamp01(value);
+  if (value <= 1) return value;
+  return clamp01(value / 255);
+}
+
+function resizeMaskBilinear(
+  maskValues: ArrayLike<number>,
+  maskWidth: number,
+  maskHeight: number,
+  outWidth: number,
+  outHeight: number,
+  isUintMask: boolean
+): Float32Array {
+  const matte = new Float32Array(outWidth * outHeight);
+  const xScale = maskWidth / Math.max(1, outWidth);
+  const yScale = maskHeight / Math.max(1, outHeight);
+
+  for (let y = 0; y < outHeight; y++) {
+    const sy = Math.min(maskHeight - 1, Math.max(0, (y + 0.5) * yScale - 0.5));
+    const y0 = Math.floor(sy);
+    const y1 = Math.min(maskHeight - 1, y0 + 1);
+    const wy = sy - y0;
+
+    for (let x = 0; x < outWidth; x++) {
+      const sx = Math.min(maskWidth - 1, Math.max(0, (x + 0.5) * xScale - 0.5));
+      const x0 = Math.floor(sx);
+      const x1 = Math.min(maskWidth - 1, x0 + 1);
+      const wx = sx - x0;
+
+      const p00 = normalizeMaskValue(maskValues[y0 * maskWidth + x0] ?? 0, isUintMask);
+      const p01 = normalizeMaskValue(maskValues[y0 * maskWidth + x1] ?? 0, isUintMask);
+      const p10 = normalizeMaskValue(maskValues[y1 * maskWidth + x0] ?? 0, isUintMask);
+      const p11 = normalizeMaskValue(maskValues[y1 * maskWidth + x1] ?? 0, isUintMask);
+
+      const top = p00 + (p01 - p00) * wx;
+      const bottom = p10 + (p11 - p10) * wx;
+      matte[y * outWidth + x] = top + (bottom - top) * wy;
+    }
+  }
+
+  return matte;
+}
+
+function toGuidanceLuma(rgba: Uint8ClampedArray): Float32Array {
+  const out = new Float32Array(rgba.length / 4);
+  for (let i = 0; i < out.length; i++) {
+    const idx = i * 4;
+    out[i] = (0.299 * rgba[idx] + 0.587 * rgba[idx + 1] + 0.114 * rgba[idx + 2]) / 255;
+  }
+  return out;
+}
+
+function boxFilterFast(src: Float32Array, width: number, height: number, radius: number): Float32Array {
+  if (radius <= 0) return src.slice();
+
+  const tmp = new Float32Array(src.length);
+  const out = new Float32Array(src.length);
+
+  for (let y = 0; y < height; y++) {
+    const rowStart = y * width;
+    let sum = 0;
+
+    for (let i = -radius; i <= radius; i++) {
+      const xx = clamp(i, 0, width - 1);
+      sum += src[rowStart + xx];
+    }
+
+    for (let x = 0; x < width; x++) {
+      const xMin = Math.max(0, x - radius);
+      const xMax = Math.min(width - 1, x + radius);
+      tmp[rowStart + x] = sum / Math.max(1, xMax - xMin + 1);
+
+      const addX = Math.min(width - 1, x + radius + 1);
+      const subX = Math.max(0, x - radius);
+      sum += src[rowStart + addX] - src[rowStart + subX];
+    }
+  }
+
+  for (let x = 0; x < width; x++) {
+    let sum = 0;
+    for (let i = -radius; i <= radius; i++) {
+      const yy = clamp(i, 0, height - 1);
+      sum += tmp[yy * width + x];
+    }
+
+    for (let y = 0; y < height; y++) {
+      const yMin = Math.max(0, y - radius);
+      const yMax = Math.min(height - 1, y + radius);
+      out[y * width + x] = sum / Math.max(1, yMax - yMin + 1);
+
+      const addY = Math.min(height - 1, y + radius + 1);
+      const subY = Math.max(0, y - radius);
+      sum += tmp[addY * width + x] - tmp[subY * width + x];
+    }
+  }
+
+  return out;
+}
+
+function guidedFilterSingleChannel(
+  guidance: Float32Array,
+  inputMatte: Float32Array,
+  width: number,
+  height: number,
+  radius: number,
+  eps: number
+): Float32Array {
+  const n = width * height;
+  const ii = new Float32Array(n);
+  const ip = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const iv = guidance[i];
+    const pv = inputMatte[i];
+    ii[i] = iv * iv;
+    ip[i] = iv * pv;
+  }
+
+  const meanI = boxFilterFast(guidance, width, height, radius);
+  const meanP = boxFilterFast(inputMatte, width, height, radius);
+  const corrI = boxFilterFast(ii, width, height, radius);
+  const corrIp = boxFilterFast(ip, width, height, radius);
+
+  const a = new Float32Array(n);
+  const b = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const varI = Math.max(0, corrI[i] - meanI[i] * meanI[i]);
+    const covIp = corrIp[i] - meanI[i] * meanP[i];
+    const ai = covIp / Math.max(EPS, varI + eps);
+    a[i] = ai;
+    b[i] = meanP[i] - ai * meanI[i];
+  }
+
+  const meanA = boxFilterFast(a, width, height, radius);
+  const meanB = boxFilterFast(b, width, height, radius);
+  const q = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    q[i] = clamp01(meanA[i] * guidance[i] + meanB[i]);
+  }
+  return q;
+}
+
+function matteToAlpha8(
+  matte: Float32Array,
+  low = 0.04,
+  high = 0.96,
+  gamma = 0.95
+): Uint8ClampedArray {
+  const alpha = new Uint8ClampedArray(matte.length);
+  for (let i = 0; i < matte.length; i++) {
+    const t = clamp01((matte[i] - low) / Math.max(EPS, high - low));
+    alpha[i] = Math.round(255 * Math.pow(t, gamma));
+  }
+  return alpha;
+}
+
+function refineMaskWithGuidedFilter(
+  maskValues: ArrayLike<number>,
+  maskWidth: number,
+  maskHeight: number,
+  fullWidth: number,
+  fullHeight: number,
+  sourceRgba: Uint8ClampedArray,
+  isUintMask: boolean
+): Uint8ClampedArray {
+  const upsampledMatte = resizeMaskBilinear(
+    maskValues,
+    maskWidth,
+    maskHeight,
+    fullWidth,
+    fullHeight,
+    isUintMask
+  );
+  const guidance = toGuidanceLuma(sourceRgba);
+  const minDim = Math.max(1, Math.min(fullWidth, fullHeight));
+  const radius = clamp(Math.round(minDim * 0.01), 2, 16);
+  const eps = 0.0035;
+  const refined = guidedFilterSingleChannel(
+    guidance,
+    upsampledMatte,
+    fullWidth,
+    fullHeight,
+    radius,
+    eps
+  );
+  return matteToAlpha8(refined);
+}
+
+function inferMaskDimensions(maskLength: number, fullW: number, fullH: number) {
+  const bestGuessW = Math.max(
+    1,
+    Math.round(Math.sqrt(maskLength * (fullW / Math.max(1, fullH))))
+  );
+  const bestGuessH = Math.max(1, Math.round(maskLength / Math.max(1, bestGuessW)));
+  if (bestGuessW * bestGuessH === maskLength) return { maskWidth: bestGuessW, maskHeight: bestGuessH };
+
+  const side = Math.max(1, Math.round(Math.sqrt(maskLength)));
+  const altHeight = Math.max(1, Math.round(maskLength / side));
+  return { maskWidth: side, maskHeight: altHeight };
+}
+
 function maskToAlpha(
   maskValues: ArrayLike<number>,
   maskWidth: number,
   maskHeight: number,
   outWidth: number,
-  outHeight: number
+  outHeight: number,
+  isUintMask: boolean
 ): Uint8ClampedArray {
   const alpha = new Uint8ClampedArray(outWidth * outHeight);
   for (let y = 0; y < outHeight; y++) {
-    const sy = Math.min(maskHeight - 1, Math.max(0, Math.round((y / Math.max(1, outHeight - 1)) * (maskHeight - 1))));
+    const sy = Math.min(
+      maskHeight - 1,
+      Math.max(0, Math.round((y / Math.max(1, outHeight - 1)) * (maskHeight - 1)))
+    );
     for (let x = 0; x < outWidth; x++) {
-      const sx = Math.min(maskWidth - 1, Math.max(0, Math.round((x / Math.max(1, outWidth - 1)) * (maskWidth - 1))));
-      const v = maskValues[sy * maskWidth + sx] ?? 0;
-      // HairSegmenter category mask uses 0 background, 1 hair.
-      alpha[y * outWidth + x] = v > 0.5 ? 255 : 0;
+      const sx = Math.min(
+        maskWidth - 1,
+        Math.max(0, Math.round((x / Math.max(1, outWidth - 1)) * (maskWidth - 1)))
+      );
+      const v = normalizeMaskValue(maskValues[sy * maskWidth + sx] ?? 0, isUintMask);
+      alpha[y * outWidth + x] = Math.round(v * 255);
     }
   }
   return alpha;
@@ -249,11 +456,6 @@ async function tryExtractWithHeavyModel(image: HTMLImageElement, crop: Rect): Pr
     const maskValues = uintMask ?? floatMask;
     if (!maskValues) return null;
 
-    const maskLen = maskValues.length;
-    const approxW = Math.max(1, Math.round(Math.sqrt(maskLen * (fullW / Math.max(1, fullH)))));
-    const approxH = Math.max(1, Math.round(maskLen / approxW));
-    const alphaMask = maskToAlpha(maskValues, approxW, approxH, fullW, fullH);
-
     const source = document.createElement("canvas");
     source.width = fullW;
     source.height = fullH;
@@ -263,6 +465,20 @@ async function tryExtractWithHeavyModel(image: HTMLImageElement, crop: Rect): Pr
 
     const srcImg = sctx.getImageData(0, 0, fullW, fullH);
     const srcData = srcImg.data;
+    const maskLen = maskValues.length;
+    const { maskWidth, maskHeight } = inferMaskDimensions(maskLen, fullW, fullH);
+    const alphaMask =
+      maskWidth * maskHeight === maskLen
+        ? refineMaskWithGuidedFilter(
+            maskValues,
+            maskWidth,
+            maskHeight,
+            fullW,
+            fullH,
+            srcData,
+            Boolean(uintMask)
+          )
+        : maskToAlpha(maskValues, Math.max(1, maskWidth), Math.max(1, maskHeight), fullW, fullH, Boolean(uintMask));
 
     for (let i = 0; i < fullW * fullH; i++) {
       const idx = i * 4;
