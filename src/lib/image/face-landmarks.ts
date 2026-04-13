@@ -20,6 +20,17 @@ export type SemanticLandmarkId = keyof typeof SEMANTIC_LANDMARK_INDICES;
 
 /** User-placed points on the hair PNG (normalized 0–1) for correspondence fit. */
 export type HairCalibrationPoints = Partial<Record<SemanticLandmarkId, { x: number; y: number }>>;
+/** Hair template points keyed by MediaPipe face landmark index (normalized 0–1). */
+export type HairTemplateIndexedControlPoints = Partial<Record<number, { x: number; y: number }>>;
+
+export const TPS_REQUIRED_CONTROL_LANDMARK_INDICES = [10, 103, 332, 33, 263] as const;
+export const TPS_JAWLINE_LANDMARK_INDICES = [
+  127, 234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454,
+] as const;
+export const TPS_TARGET_CONTROL_LANDMARK_INDICES = [
+  ...TPS_REQUIRED_CONTROL_LANDMARK_INDICES,
+  ...TPS_JAWLINE_LANDMARK_INDICES,
+] as const;
 
 export type NormalizedLandmark = { x: number; y: number; z?: number };
 

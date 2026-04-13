@@ -8,6 +8,7 @@ import { normalizeHairAnchor } from "@/config/hair-anchors";
 import { detectFaceLandmarksNormalized, type NormalizedLandmark } from "@/lib/image/face-landmarks";
 import { computeCorrespondenceOverlay } from "@/lib/image/hair-correspondence-fit";
 import { FaceLandmarkDots } from "./FaceLandmarkDots";
+import { WarpedMesh } from "./WarpedMesh";
 import { useHairAutoFit } from "./use-hair-auto-fit";
 
 type Props = {
@@ -35,6 +36,7 @@ export function EditorCanvas({
   const [baseLandmarks, setBaseLandmarks] = useState<NormalizedLandmark[] | null>(null);
   const [showFaceLandmarks, setShowFaceLandmarks] = useState(false);
   const [showHairLandmarks, setShowHairLandmarks] = useState(false);
+  const [tpsViewMode, setTpsViewMode] = useState<"tps" | "preview">("tps");
 
   // Resize canvas to fit container
   useEffect(() => {
@@ -167,6 +169,7 @@ export function EditorCanvas({
     if (!imgProps || !activeOverlayImage || !hairstyle) return null;
     return computeCorrespondenceOverlay(
       hairstyle.calibrationPoints,
+      hairstyle.indexedCalibrationPoints,
       baseLandmarks,
       imgProps,
       hairNaturalW,
@@ -188,14 +191,19 @@ export function EditorCanvas({
   ]);
 
   const useCorrespondenceFit = correspondenceTransform != null;
+  const useTPSFit = correspondenceTransform?.mode === "tps";
+  const showTPSMesh = useTPSFit && tpsViewMode === "tps";
 
   const baseTransform = useMemo(() => {
+    if (correspondenceTransform?.mode === "tps") {
+      return { x: 0, y: 0, scale: 1, rotation: 0 };
+    }
     if (correspondenceTransform) {
       return {
-        x: correspondenceTransform.offsetX,
-        y: correspondenceTransform.offsetY,
-        scale: correspondenceTransform.scale,
-        rotation: correspondenceTransform.rotation,
+        x: correspondenceTransform.transform.offsetX,
+        y: correspondenceTransform.transform.offsetY,
+        scale: correspondenceTransform.transform.scale,
+        rotation: correspondenceTransform.transform.rotation,
       };
     }
     return autoFitTransform;
@@ -308,41 +316,64 @@ export function EditorCanvas({
             )}
             {activeOverlayImage && imgProps && (
               <>
-                <KonvaImage
-                  image={activeOverlayImage}
-                  x={baseCenterX + activeOffsetX}
-                  y={baseCenterY + activeOffsetY}
-                  width={overlayWidth}
-                  height={overlayHeight}
-                  offsetX={overlayWidth / 2}
-                  offsetY={overlayHeight / 2}
-                  rotation={activeRotation}
-                  opacity={overlayOpacity}
-                  draggable
-                  onWheel={handleOverlayWheel}
-                  onDragMove={(event) => {
-                    const node = event.target;
-                    setManualTransform({
-                      x: node.x() - baseCenterX,
-                      y: node.y() - baseCenterY,
-                      scale: activeScale,
-                      rotation: activeRotation
-                    });
-                  }}
-                />
-                {tintedOverlayImage && (
-                  <KonvaImage
-                    image={tintedOverlayImage}
-                    x={baseCenterX + activeOffsetX}
-                    y={baseCenterY + activeOffsetY}
-                    width={overlayWidth}
-                    height={overlayHeight}
-                    offsetX={overlayWidth / 2}
-                    offsetY={overlayHeight / 2}
-                    rotation={activeRotation}
-                    opacity={0.42}
-                    listening={false}
+                {showTPSMesh && correspondenceTransform?.mode === "tps" ? (
+                  <WarpedMesh
+                    image={activeOverlayImage}
+                    mesh={correspondenceTransform.mesh}
+                    x={activeOffsetX}
+                    y={activeOffsetY}
+                    opacity={overlayOpacity}
+                    draggable
+                    onWheel={handleOverlayWheel}
+                    onDragMove={(event) => {
+                      const node = event.target;
+                      setManualTransform({
+                        x: node.x(),
+                        y: node.y(),
+                        scale: 1,
+                        rotation: 0
+                      });
+                    }}
                   />
+                ) : (
+                  <>
+                    <KonvaImage
+                      image={activeOverlayImage}
+                      x={baseCenterX + activeOffsetX}
+                      y={baseCenterY + activeOffsetY}
+                      width={overlayWidth}
+                      height={overlayHeight}
+                      offsetX={overlayWidth / 2}
+                      offsetY={overlayHeight / 2}
+                      rotation={activeRotation}
+                      opacity={overlayOpacity}
+                      draggable
+                      onWheel={handleOverlayWheel}
+                      onDragMove={(event) => {
+                        const node = event.target;
+                        setManualTransform({
+                          x: node.x() - baseCenterX,
+                          y: node.y() - baseCenterY,
+                          scale: activeScale,
+                          rotation: activeRotation
+                        });
+                      }}
+                    />
+                    {tintedOverlayImage && (
+                      <KonvaImage
+                        image={tintedOverlayImage}
+                        x={baseCenterX + activeOffsetX}
+                        y={baseCenterY + activeOffsetY}
+                        width={overlayWidth}
+                        height={overlayHeight}
+                        offsetX={overlayWidth / 2}
+                        offsetY={overlayHeight / 2}
+                        rotation={activeRotation}
+                        opacity={0.42}
+                        listening={false}
+                      />
+                    )}
+                  </>
                 )}
                 {showHairLandmarks &&
                   hairstyle?.calibrationPoints &&
@@ -378,6 +409,36 @@ export function EditorCanvas({
       <div className="absolute bottom-6 left-6 right-6 flex items-end justify-between z-10 pointer-events-none">
         <div className="pointer-events-auto">
           <div className="flex items-center gap-2">
+            {useTPSFit && (
+              <div className="flex items-center gap-1 rounded-full bg-white/85 p-1 shadow-lg backdrop-blur-md dark:bg-slate-900/85">
+                <button
+                  type="button"
+                  onClick={() => setTpsViewMode("tps")}
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                    tpsViewMode === "tps"
+                      ? "bg-violet-600 text-white"
+                      : "text-slate-600 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-slate-700/60"
+                  }`}
+                  aria-pressed={tpsViewMode === "tps"}
+                  aria-label="Show TPS fit"
+                >
+                  TPS fit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTpsViewMode("preview")}
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                    tpsViewMode === "preview"
+                      ? "bg-slate-700 text-white dark:bg-slate-200 dark:text-slate-900"
+                      : "text-slate-600 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-slate-700/60"
+                  }`}
+                  aria-pressed={tpsViewMode === "preview"}
+                  aria-label="Show preview fit"
+                >
+                  Preview fit
+                </button>
+              </div>
+            )}
             {sourceProfileImageUrl && (
               <button
                 type="button"
@@ -469,8 +530,12 @@ export function EditorCanvas({
           >
             <span className="material-symbols-outlined text-sm">hub</span>
             {hairstyle?.calibrationQuality === "low"
-              ? "Correspondence fit (review points)"
-              : "Correspondence fit"}
+              ? useTPSFit
+                ? "TPS fit (review points)"
+                : "Correspondence fit (review points)"
+              : useTPSFit
+                ? "TPS fit"
+                : "Correspondence fit"}
           </div>
         )}
       {!isDetecting &&

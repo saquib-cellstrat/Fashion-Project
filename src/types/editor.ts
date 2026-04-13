@@ -1,6 +1,10 @@
-import type { HairCalibrationPoints, SemanticLandmarkId } from "@/lib/image/face-landmarks";
+import type {
+  HairCalibrationPoints,
+  HairTemplateIndexedControlPoints,
+  SemanticLandmarkId,
+} from "@/lib/image/face-landmarks";
 
-export type { HairCalibrationPoints, SemanticLandmarkId };
+export type { HairCalibrationPoints, HairTemplateIndexedControlPoints, SemanticLandmarkId };
 
 export type EditorSession = {
   id: string;
@@ -43,6 +47,8 @@ export type HairstyleTemplate = {
   anchor?: HairAnchor;
   /** Optional per-PNG landmark placement for correspondence-based fit (overrides anchor auto-fit when complete). */
   calibrationPoints?: HairCalibrationPoints;
+  /** Optional normalized control points keyed by face-mesh index for TPS warp fitting. */
+  indexedCalibrationPoints?: HairTemplateIndexedControlPoints;
   calibrationConfidence?: number;
   calibrationQuality?: "high" | "medium" | "low";
   calibrationWarnings?: string[];

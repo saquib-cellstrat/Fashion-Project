@@ -1,7 +1,9 @@
 import {
   SEMANTIC_LANDMARK_INDICES,
+  TPS_TARGET_CONTROL_LANDMARK_INDICES,
   detectFaceLandmarksNormalized,
   type HairCalibrationPoints,
+  type HairTemplateIndexedControlPoints,
 } from "@/lib/image/face-landmarks";
 
 export type HairCalibrationQuality = "high" | "medium" | "low";
@@ -10,6 +12,7 @@ export type HairTemplatePreprocessResult = {
   imageUrl: string;
   sourceImageUrl?: string;
   calibrationPoints?: HairCalibrationPoints;
+  indexedCalibrationPoints?: HairTemplateIndexedControlPoints;
   calibrationConfidence?: number;
   calibrationQuality?: HairCalibrationQuality;
   calibrationWarnings?: string[];
@@ -506,6 +509,25 @@ function extractSemanticPointMap(landmarks: Array<{ x: number; y: number }>) {
   return out;
 }
 
+function remapIndexedControlPointsToCrop(
+  landmarks: Array<{ x: number; y: number }>,
+  crop: Rect,
+  image: HTMLImageElement
+): HairTemplateIndexedControlPoints {
+  const w = image.naturalWidth || image.width || 1;
+  const h = image.naturalHeight || image.height || 1;
+  const out: HairTemplateIndexedControlPoints = {};
+  for (const idx of TPS_TARGET_CONTROL_LANDMARK_INDICES) {
+    const lm = landmarks[idx];
+    if (!lm) continue;
+    out[idx] = {
+      x: clamp01((lm.x * w - crop.x) / Math.max(EPS, crop.width)),
+      y: clamp01((lm.y * h - crop.y) / Math.max(EPS, crop.height)),
+    };
+  }
+  return out;
+}
+
 export async function preprocessUploadedHairTemplate(file: File): Promise<HairTemplatePreprocessResult> {
   const originalDataUrl = await fileToDataUrl(file);
   return preprocessUploadedHairTemplateFromDataUrl(originalDataUrl, "balanced");
@@ -553,6 +575,7 @@ export async function preprocessUploadedHairTemplateFromDataUrl(
   }
   const extractedDataUrl = toDataUrl(extracted);
   const remappedPoints = remapCalibrationPointsToCrop(semantic, crop, image);
+  const remappedIndexedPoints = remapIndexedControlPointsToCrop(detection.landmarks, crop, image);
   const validation = validateCalibrationPoints(remappedPoints);
 
   const baseConfidence = 0.86;
@@ -563,6 +586,7 @@ export async function preprocessUploadedHairTemplateFromDataUrl(
     imageUrl: extractedDataUrl,
     sourceImageUrl: originalDataUrl,
     calibrationPoints: isCalibrationPointMap(remappedPoints) ? remappedPoints : undefined,
+    indexedCalibrationPoints: Object.keys(remappedIndexedPoints).length ? remappedIndexedPoints : undefined,
     calibrationConfidence: confidence,
     calibrationQuality: quality,
     calibrationWarnings: validation.warnings,
