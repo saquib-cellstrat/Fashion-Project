@@ -18,7 +18,6 @@ import { EditorIconToolbar } from "@/components/editor/left-sidebar/EditorIconTo
 import { EditorLeftPanel } from "@/components/editor/left-sidebar/EditorLeftPanel";
 import { EditorCanvas } from "@/components/editor/canvas/EditorCanvas";
 import { EditorVariationTray } from "@/components/editor/bottom-tray/EditorVariationTray";
-import { EditorRightSidebar } from "@/components/editor/right-sidebar/EditorRightSidebar";
 import { getEditorSourceProfileFromDraft } from "@/lib/storage/onboarding-draft";
 import { routes } from "@/config/routes";
 import {
@@ -71,8 +70,6 @@ export default function EditorPage() {
   const handleExportReady = useCallback((exportFn: (() => void) | null) => {
     setExportEditorImage((prev) => (prev === exportFn ? prev : exportFn));
   }, []);
-
-  const [showRightSidebar, setShowRightSidebar] = useState(true);
   /** Read after mount so SSR and first client paint match (avoids localStorage hydration mismatch). */
   const [sourceProfile, setSourceProfile] = useState<EditorSourceProfile | null>(null);
   useEffect(() => {
@@ -395,13 +392,25 @@ export default function EditorPage() {
               </Link>
             </div>
           )}
-          <EditorCanvas
-            hairstyle={selectedHairstyle}
-            selectedVariation={tryOnEnabled ? selectedVariation : null}
-            selectedColorHex={selectedColor?.hex ?? null}
-            sourceProfileImageUrl={sourceProfile?.imageDataUrl ?? null}
-            onExportReady={handleExportReady}
-          />
+          <div className="flex flex-1 gap-6 min-h-0">
+            <EditorCanvas
+              hairstyle={selectedHairstyle}
+              selectedVariation={tryOnEnabled ? selectedVariation : null}
+              selectedColorHex={selectedColor?.hex ?? null}
+              sourceProfileImageUrl={sourceProfile?.imageDataUrl ?? null}
+              fitEngine="affine"
+              title="Legacy (Affine)"
+            />
+            <EditorCanvas
+              hairstyle={selectedHairstyle}
+              selectedVariation={tryOnEnabled ? selectedVariation : null}
+              selectedColorHex={selectedColor?.hex ?? null}
+              sourceProfileImageUrl={sourceProfile?.imageDataUrl ?? null}
+              onExportReady={handleExportReady}
+              fitEngine="mls"
+              title="Current (MLS Warp)"
+            />
+          </div>
 
           <EditorVariationTray
             variations={currentVariations}
@@ -412,23 +421,7 @@ export default function EditorPage() {
             }}
           />
 
-          {/* Re-open button when right sidebar is collapsed */}
-          {!showRightSidebar && (
-            <button
-              type="button"
-              onClick={() => setShowRightSidebar(true)}
-              className="absolute top-6 right-6 z-10 flex size-10 items-center justify-center rounded-xl bg-white border border-slate-200 shadow-lg text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-colors dark:bg-slate-900 dark:border-slate-800"
-              aria-label="Open sidebar"
-            >
-              <span className="material-symbols-outlined text-xl">left_panel_open</span>
-            </button>
-          )}
         </main>
-
-        {/* Right sidebar: trending & challenges */}
-        {showRightSidebar && (
-          <EditorRightSidebar onClose={() => setShowRightSidebar(false)} />
-        )}
       </div>
     </div>
   );
