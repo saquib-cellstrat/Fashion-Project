@@ -9,6 +9,9 @@ import { detectFaceLandmarksNormalized, type NormalizedLandmark } from "@/lib/im
 import { computeCorrespondenceOverlay } from "@/lib/image/hair-correspondence-fit";
 import { FaceLandmarkDots } from "./FaceLandmarkDots";
 import { useHairAutoFit } from "./use-hair-auto-fit";
+import { useFaceMeshImage } from "@/lib/3d/useFaceMesh";
+import { HairStage, compositeCanvasExport } from "./HairStage";
+import { loadFaceMeshTopology, type FaceMeshTopology } from "@/lib/3d/face-mesh-topology";
 
 type Props = {
   hairstyle: HairstyleTemplate | null;
@@ -27,6 +30,8 @@ export function EditorCanvas({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage | null>(null);
+  // R3F canvas ref — used for compositing on export
+  const r3fCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [baseImage, setBaseImage] = useState<HTMLImageElement | null>(null);
   const [overlayImage, setOverlayImage] = useState<HTMLImageElement | null>(null);
@@ -35,6 +40,10 @@ export function EditorCanvas({
   const [baseLandmarks, setBaseLandmarks] = useState<NormalizedLandmark[] | null>(null);
   const [showFaceLandmarks, setShowFaceLandmarks] = useState(false);
   const [showHairLandmarks, setShowHairLandmarks] = useState(false);
+  // ── 3D mode state ──────────────────────────────────────────────────────────
+  const [use3DMode, setUse3DMode] = useState(false);
+  const [topology, setTopology] = useState<FaceMeshTopology | null>(null);
+  const [topologyError, setTopologyError] = useState(false);
 
   // Resize canvas to fit container
   useEffect(() => {
@@ -59,6 +68,16 @@ export function EditorCanvas({
 
     return () => observer.disconnect();
   }, []);
+
+  // Load face mesh topology JSON (once, lazy — only when 3D mode is enabled)
+  useEffect(() => {
+    if (!use3DMode || topology || topologyError) return;
+    let cancelled = false;
+    loadFaceMeshTopology()
+      .then((t) => { if (!cancelled) setTopology(t); })
+      .catch(() => { if (!cancelled) setTopologyError(true); });
+    return () => { cancelled = true; };
+  }, [use3DMode, topology, topologyError]);
 
   // Load source profile image (base layer)
   useEffect(() => {
@@ -148,6 +167,10 @@ export function EditorCanvas({
 
   const activeBaseImage = sourceProfileImageUrl ? baseImage : null;
   const activeOverlayImage = selectedVariation ? overlayImage : null;
+
+  // ── 3D face mesh data (runs when 3D mode is active) ────────────────────────
+  // useFaceMeshImage re-uses the same MediaPipe singleton — no extra model load.
+  const faceMeshData = useFaceMeshImage(use3DMode ? activeBaseImage : null);
 
   const { autoFitTransform, isDetecting, isDetected, fitSource } = useHairAutoFit(
     activeBaseImage,
@@ -248,17 +271,26 @@ export function EditorCanvas({
       onExportReady(() => {
         const stage = stageRef.current;
         if (!stage) return;
-        const exportCanvas = stage.toCanvas({ pixelRatio: 2 });
-        const composed = document.createElement("canvas");
-        composed.width = exportCanvas.width;
-        composed.height = exportCanvas.height;
-        const cctx = composed.getContext("2d");
-        if (!cctx) return;
-        // Force opaque background so saved images do not appear black in viewers.
-        cctx.fillStyle = "#ffffff";
-        cctx.fillRect(0, 0, composed.width, composed.height);
-        cctx.drawImage(exportCanvas, 0, 0);
-        const dataUrl = composed.toDataURL("image/png");
+        const konvaCanvas = stage.toCanvas({ pixelRatio: 2 });
+
+        let dataUrl: string;
+
+        if (use3DMode && r3fCanvasRef.current) {
+          // Composite Konva base photo + Three.js hair overlay
+          dataUrl = compositeCanvasExport(konvaCanvas, r3fCanvasRef.current);
+        } else {
+          // Legacy 2D: just Konva canvas with white background
+          const composed = document.createElement("canvas");
+          composed.width = konvaCanvas.width;
+          composed.height = konvaCanvas.height;
+          const cctx = composed.getContext("2d");
+          if (!cctx) return;
+          cctx.fillStyle = "#ffffff";
+          cctx.fillRect(0, 0, composed.width, composed.height);
+          cctx.drawImage(konvaCanvas, 0, 0);
+          dataUrl = composed.toDataURL("image/png");
+        }
+
         const ts = new Date();
         const pad = (n: number) => String(n).padStart(2, "0");
         const fileName = `hair-tryon-${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.png`;
@@ -285,12 +317,21 @@ export function EditorCanvas({
       window.cancelAnimationFrame(frame);
       onExportReady(null);
     };
-  }, [onExportReady]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onExportReady, use3DMode]);
+
+  // Grab the R3F WebGL canvas element after mount (for export compositing)
+  const r3fContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!r3fContainerRef.current) return;
+    const canvas = r3fContainerRef.current.querySelector("canvas");
+    if (canvas) r3fCanvasRef.current = canvas;
+  });
 
   return (
     <div className="relative flex-1 rounded-3xl bg-white shadow-xl overflow-hidden flex items-center justify-center border border-slate-200 group dark:bg-slate-900 dark:border-slate-800">
-      {/* Konva canvas */}
-      <div ref={containerRef} className="absolute inset-0">
+      {/* ── Layer 1: Left Pane (2D Legacy) / Main Pane ── */}
+      <div ref={containerRef} className={`absolute ${use3DMode ? "inset-y-0 left-0 w-1/2 border-r border-slate-200 dark:border-slate-700" : "inset-0"}`}>
         <Stage ref={stageRef} width={dimensions.width} height={dimensions.height}>
           <Layer>
             {activeBaseImage && imgProps && (
@@ -306,6 +347,7 @@ export function EditorCanvas({
             {showFaceLandmarks && imgProps && (
               <FaceLandmarkDots landmarks={baseLandmarks} imgProps={imgProps} />
             )}
+            {/* 2D representation: always drawn in 2D mode, and drawn on the left pane in split view */}
             {activeOverlayImage && imgProps && (
               <>
                 <KonvaImage
@@ -374,7 +416,77 @@ export function EditorCanvas({
         </Stage>
       </div>
 
-      {/* Overlays */}
+      {/* ── Layer 2: Right Pane (3D Proxy) — only in 3D Mode ─────────────── */}
+      {use3DMode && topology && activeOverlayImage && imgProps && (
+        <div
+          ref={r3fContainerRef}
+          className="absolute inset-y-0 right-0 w-1/2 overflow-hidden pointer-events-none"
+          aria-hidden
+        >
+          {/* Base photo under the 3D layer for context */}
+          <div className="absolute inset-0 z-0">
+            <Stage width={dimensions.width} height={dimensions.height}>
+              <Layer>
+                {activeBaseImage && (
+                  <KonvaImage
+                    image={activeBaseImage}
+                    x={imgProps.x}
+                    y={imgProps.y}
+                    width={imgProps.width}
+                    height={imgProps.height}
+                    opacity={1}
+                  />
+                )}
+                {showFaceLandmarks && (
+                  <FaceLandmarkDots landmarks={baseLandmarks} imgProps={imgProps} />
+                )}
+              </Layer>
+            </Stage>
+          </div>
+          
+          <div className="absolute inset-0 z-10">
+          <HairStage
+            baseImage={activeBaseImage}
+            hairImage={activeOverlayImage}
+            faceMeshData={faceMeshData}
+            topology={topology}
+            imgProps={imgProps}
+            canvasWidth={dimensions.width}
+            canvasHeight={dimensions.height}
+            opacity={overlayOpacity}
+            tintHex={selectedColorHex}
+            fitRect={{
+              x: baseCenterX + activeOffsetX,
+              y: baseCenterY + activeOffsetY,
+              width: overlayWidth,
+              height: overlayHeight,
+              rotation: activeRotation
+            }}
+            calibrationPoints={hairstyle?.calibrationPoints}
+          />
+          </div>
+        </div>
+      )}
+
+      {/* 3D loading feedback */}
+      {use3DMode && !topology && !topologyError && (
+        <div className="absolute inset-x-0 top-4 flex justify-center pointer-events-none">
+          <div className="flex items-center gap-2 bg-blue-500/10 text-blue-600 dark:text-blue-400 px-3 py-1.5 rounded-full text-xs font-bold shadow-sm">
+            <span className="material-symbols-outlined text-sm animate-spin">autorenew</span>
+            Loading 3D engine…
+          </div>
+        </div>
+      )}
+      {use3DMode && topologyError && (
+        <div className="absolute inset-x-0 top-4 flex justify-center pointer-events-none">
+          <div className="flex items-center gap-2 bg-red-500/10 text-red-600 dark:text-red-400 px-3 py-1.5 rounded-full text-xs font-bold shadow-sm">
+            <span className="material-symbols-outlined text-sm">error</span>
+            3D engine failed to load
+          </div>
+        </div>
+      )}
+
+      {/* ── Overlays ─────────────────────────────────────────────────── */}
       <div className="absolute bottom-6 left-6 right-6 flex items-end justify-between z-10 pointer-events-none">
         <div className="pointer-events-auto">
           <div className="flex items-center gap-2">
@@ -413,6 +525,22 @@ export function EditorCanvas({
           </div>
         </div>
         <div className="flex gap-2 pointer-events-auto">
+          {/* 3D / 2D mode toggle */}
+          <button
+            type="button"
+            onClick={() => setUse3DMode((v) => !v)}
+            title={use3DMode ? "Switch to 2D mode" : "Switch to 3D Proxy mode"}
+            className={`flex size-12 items-center justify-center rounded-full shadow-lg transition-all ${
+              use3DMode
+                ? "bg-violet-600 text-white ring-2 ring-violet-400 ring-offset-1"
+                : "bg-white/80 text-slate-900 backdrop-blur-md hover:bg-white dark:bg-slate-900/80 dark:text-white"
+            }`}
+            aria-label={use3DMode ? "Disable 3D projection" : "Enable 3D projection"}
+            aria-pressed={use3DMode}
+            id="toggle-3d-mode-btn"
+          >
+            <span className="material-symbols-outlined">view_in_ar</span>
+          </button>
           <button
             type="button"
             onClick={() => setOverlayOpacity((prev) => Math.max(0.2, prev - 0.1))}
@@ -429,19 +557,22 @@ export function EditorCanvas({
           >
             <span className="material-symbols-outlined">visibility</span>
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              setManualTransform(null);
-              setOverlayOpacity(1);
-            }}
-            className="flex size-12 items-center justify-center rounded-full bg-white/80 backdrop-blur-md text-slate-900 shadow-lg hover:bg-white transition-colors dark:bg-slate-900/80 dark:text-white"
-            aria-label="Reset hair layer transform"
-          >
-            <span className="material-symbols-outlined">
-              {autoFitTransform || correspondenceTransform ? "auto_fix_high" : "refresh"}
-            </span>
-          </button>
+          {/* Reset only shown in 2D mode */}
+          {!use3DMode && (
+            <button
+              type="button"
+              onClick={() => {
+                setManualTransform(null);
+                setOverlayOpacity(1);
+              }}
+              className="flex size-12 items-center justify-center rounded-full bg-white/80 backdrop-blur-md text-slate-900 shadow-lg hover:bg-white transition-colors dark:bg-slate-900/80 dark:text-white"
+              aria-label="Reset hair layer transform"
+            >
+              <span className="material-symbols-outlined">
+                {autoFitTransform || correspondenceTransform ? "auto_fix_high" : "refresh"}
+              </span>
+            </button>
+          )}
         </div>
       </div>
 

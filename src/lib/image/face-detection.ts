@@ -105,6 +105,8 @@ export async function getMediaPipeFaceLandmarker() {
             },
             runningMode: "IMAGE",
             numFaces: 2,
+            // Enable 4×4 head pose matrix for the 3D projection pipeline.
+            outputFacialTransformationMatrixes: true,
           });
         });
       } catch {

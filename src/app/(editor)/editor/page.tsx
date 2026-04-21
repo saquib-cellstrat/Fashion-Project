@@ -72,7 +72,7 @@ export default function EditorPage() {
     setExportEditorImage((prev) => (prev === exportFn ? prev : exportFn));
   }, []);
 
-  const [showRightSidebar, setShowRightSidebar] = useState(true);
+  const [showRightSidebar, setShowRightSidebar] = useState(false);
   /** Read after mount so SSR and first client paint match (avoids localStorage hydration mismatch). */
   const [sourceProfile, setSourceProfile] = useState<EditorSourceProfile | null>(null);
   useEffect(() => {
