@@ -5,19 +5,40 @@ import { Stage, Layer, Image as KonvaImage, Circle } from "react-konva";
 import type { HairstyleTemplate, Variation } from "@/types/editor";
 import type Konva from "konva";
 import { normalizeHairAnchor } from "@/config/hair-anchors";
-import { detectFaceLandmarksNormalized, type NormalizedLandmark } from "@/lib/image/face-landmarks";
+import {
+  detectFaceLandmarksNormalized,
+  extractLandmarkGroups,
+  FACE_CONTOUR_36_INDICES,
+  HEAD_CAP_INDICES,
+  type NormalizedLandmark,
+  type NormalizedPoint2,
+} from "@/lib/image/face-landmarks";
 import { computeCorrespondenceOverlay } from "@/lib/image/hair-correspondence-fit";
+import { detectFaceBox } from "@/lib/image/face-detection";
 import { FaceLandmarkDots } from "./FaceLandmarkDots";
 import { useHairAutoFit } from "./use-hair-auto-fit";
 import { MLSWarpCanvas } from "./MLSWarpCanvas";
 import { type Point2 } from "@/lib/image/mlsWarp";
-import { SEMANTIC_LANDMARK_INDICES, type SemanticLandmarkId, FACE_OVAL_INDICES } from "@/lib/image/face-landmarks";
+import { SEMANTIC_LANDMARK_INDICES, type SemanticLandmarkId } from "@/lib/image/face-landmarks";
 
 type Props = {
   hairstyle: HairstyleTemplate | null;
   selectedVariation: Variation | null;
   selectedColorHex: string | null;
   sourceProfileImageUrl: string | null;
+  showFaceLandmarks?: boolean;
+  showHairLandmarks?: boolean;
+  showFaceContourDebug?: boolean;
+  showHairContourDebug?: boolean;
+  onOverlayControlsReady?: (
+    controls:
+      | {
+          decreaseOpacity: () => void;
+          increaseOpacity: () => void;
+          resetOverlay: () => void;
+        }
+      | null
+  ) => void;
   onExportReady?: ((exportFn: (() => void) | null) => void) | undefined;
   fitEngine?: "affine" | "mls";
   title?: string;
@@ -28,6 +49,11 @@ export function EditorCanvas({
   selectedVariation,
   selectedColorHex,
   sourceProfileImageUrl,
+  showFaceLandmarks = false,
+  showHairLandmarks = false,
+  showFaceContourDebug = false,
+  showHairContourDebug = false,
+  onOverlayControlsReady,
   onExportReady,
   fitEngine = "mls",
   title,
@@ -40,8 +66,9 @@ export function EditorCanvas({
   const [manualTransform, setManualTransform] = useState<{ x: number; y: number; scale: number; rotation: number } | null>(null);
   const [overlayOpacity, setOverlayOpacity] = useState(1);
   const [baseLandmarks, setBaseLandmarks] = useState<NormalizedLandmark[] | null>(null);
-  const [showFaceLandmarks, setShowFaceLandmarks] = useState(false);
-  const [showHairLandmarks, setShowHairLandmarks] = useState(false);
+  const [overlayOval36Detected, setOverlayOval36Detected] = useState<NormalizedPoint2[] | null>(null);
+  const [overlayHeadCapDetected, setOverlayHeadCapDetected] = useState<NormalizedPoint2[] | null>(null);
+  const [baseFaceBoxNorm, setBaseFaceBoxNorm] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [warpedCanvas, setWarpedCanvas] = useState<HTMLCanvasElement | null>(null);
   const mlsImageRef = useRef<Konva.Image>(null);
 
@@ -107,6 +134,33 @@ export function EditorCanvas({
     };
   }, [sourceProfileImageUrl, baseImage]);
 
+  // Secondary detection signal: face box, used to infer top-of-head coverage.
+  useEffect(() => {
+    const img = sourceProfileImageUrl ? baseImage : null;
+    if (!img) {
+      queueMicrotask(() => setBaseFaceBoxNorm(null));
+      return;
+    }
+    let cancelled = false;
+    void detectFaceBox(img).then((result) => {
+      if (cancelled || !result.box) {
+        if (!cancelled) setBaseFaceBoxNorm(null);
+        return;
+      }
+      const w = img.naturalWidth || img.width || 1;
+      const h = img.naturalHeight || img.height || 1;
+      setBaseFaceBoxNorm({
+        x: result.box.x / w,
+        y: result.box.y / h,
+        width: result.box.width / w,
+        height: result.box.height / h,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceProfileImageUrl, baseImage]);
+
   // Load selected hairstyle variation (mock overlay layer)
   useEffect(() => {
     if (!selectedVariation?.thumbnailUrl) return;
@@ -121,6 +175,28 @@ export function EditorCanvas({
       isActive = false;
     };
   }, [selectedVariation?.thumbnailUrl]);
+
+  // Fallback: detect dual contour groups directly on current hair image when template metadata is unavailable.
+  useEffect(() => {
+    const overlayForDetection = selectedVariation ? overlayImage : null;
+    if (!overlayForDetection || (hairstyle?.templateOval36?.length && hairstyle?.templateHeadCap?.length)) {
+      queueMicrotask(() => {
+        setOverlayOval36Detected(null);
+        setOverlayHeadCapDetected(null);
+      });
+      return;
+    }
+    let cancelled = false;
+    void detectFaceLandmarksNormalized(overlayForDetection).then((res) => {
+      if (cancelled) return;
+      const groups = extractLandmarkGroups(res?.landmarks ?? null);
+      setOverlayOval36Detected(groups.oval36.length ? groups.oval36 : null);
+      setOverlayHeadCapDetected(groups.headCap.length ? groups.headCap : null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedVariation, overlayImage, hairstyle?.templateOval36, hairstyle?.templateHeadCap]);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -201,48 +277,149 @@ export function EditorCanvas({
   ]);
 
   const mlsPoints = useMemo(() => {
-    if (fitEngine !== "mls" || !hairstyle?.calibrationPoints || !baseLandmarks?.length || !imgProps || !activeOverlayImage) return null;
+    if (fitEngine !== "mls" || !hairstyle || !baseLandmarks?.length || !imgProps || !activeOverlayImage) return null;
     
     const src: Point2[] = [];
     const dst: Point2[] = [];
-    const calib = hairstyle.calibrationPoints;
+    const calib = hairstyle.calibrationPoints ?? {};
     const usedIndices = new Set<number>();
+    const baseGroups = extractLandmarkGroups(baseLandmarks);
+    const hairOval = hairstyle.templateOval36?.length ? hairstyle.templateOval36 : overlayOval36Detected;
+    const hairHeadCap = hairstyle.templateHeadCap?.length ? hairstyle.templateHeadCap : overlayHeadCapDetected;
 
-    if (calib.leftEar && calib.rightEar && calib.forehead && calib.chin) {
-      const hLeftX = calib.leftEar.x * hairNaturalW;
-      const hRightX = calib.rightEar.x * hairNaturalW;
-      const hTopY = calib.forehead.y * hairNaturalH;
-      const hBotY = calib.chin.y * hairNaturalH;
-      
-      const hCenterX = (hLeftX + hRightX) / 2;
-      const hCenterY = (hTopY + hBotY) / 2;
-      const hRadiusX = Math.abs(hRightX - hLeftX) / 2;
-      const hRadiusY = Math.abs(hBotY - hTopY) / 2;
+    const pairGroup = (
+      srcGroup: NormalizedPoint2[] | null | undefined,
+      dstGroup: NormalizedPoint2[],
+      groupIndices: readonly number[],
+      repeat = 1
+    ) => {
+      if (!srcGroup?.length || !dstGroup.length) return;
+      const n = Math.min(srcGroup.length, dstGroup.length);
+      for (let i = 0; i < n; i++) {
+        const s = srcGroup[i];
+        const d = dstGroup[i];
+        for (let r = 0; r < repeat; r++) {
+          src.push({ x: s.x * hairNaturalW, y: s.y * hairNaturalH });
+          dst.push({
+            x: imgProps.x + d.x * imgProps.width,
+            y: imgProps.y + d.y * imgProps.height,
+          });
+        }
+        usedIndices.add(groupIndices[i] ?? -1);
+      }
+    };
 
-      const uLeftLm = baseLandmarks[SEMANTIC_LANDMARK_INDICES.leftEar];
-      const uRightLm = baseLandmarks[SEMANTIC_LANDMARK_INDICES.rightEar];
-      const uTopLm = baseLandmarks[SEMANTIC_LANDMARK_INDICES.forehead];
-      const uBotLm = baseLandmarks[SEMANTIC_LANDMARK_INDICES.chin];
-      
-      if (uLeftLm && uRightLm && uTopLm && uBotLm) {
-        const uCenterX = (uLeftLm.x + uRightLm.x) / 2;
-        const uCenterY = (uTopLm.y + uBotLm.y) / 2;
-        
-        for (const idx of FACE_OVAL_INDICES) {
-          const lm = baseLandmarks[idx];
-          if (!lm) continue;
-          
-          const targetX = imgProps.x + lm.x * imgProps.width;
-          const targetY = imgProps.y + lm.y * imgProps.height;
-          
-          const angle = Math.atan2(lm.y - uCenterY, lm.x - uCenterX);
-          
-          const sourceX = hCenterX + hRadiusX * Math.cos(angle);
-          const sourceY = hCenterY + hRadiusY * Math.sin(angle);
-          
-          src.push({ x: sourceX, y: sourceY });
-          dst.push({ x: targetX, y: targetY });
-          usedIndices.add(idx);
+    // Balanced blend: oval anchors dominate shape, head-cap anchors improve coverage.
+    pairGroup(hairOval, baseGroups.oval36, FACE_CONTOUR_36_INDICES, 2);
+    pairGroup(hairHeadCap, baseGroups.headCap, HEAD_CAP_INDICES, 1);
+
+    if (hairOval?.length && baseGroups.oval36.length) {
+      const pairCount = Math.min(hairOval.length, baseGroups.oval36.length);
+      const contour = hairOval;
+      const baseContour = baseGroups.oval36;
+      const headCap = hairHeadCap;
+      const baseHeadCap = baseGroups.headCap;
+      const srcCenter = contour.reduce(
+        (acc, p) => ({ x: acc.x + p.x * hairNaturalW, y: acc.y + p.y * hairNaturalH }),
+        { x: 0, y: 0 }
+      );
+      srcCenter.x /= contour.length;
+      srcCenter.y /= contour.length;
+      const dstCenter = baseContour.reduce(
+        (acc, p) => ({
+          x: acc.x + (imgProps.x + p.x * imgProps.width),
+          y: acc.y + (imgProps.y + p.y * imgProps.height),
+        }),
+        { x: 0, y: 0 }
+      );
+      dstCenter.x /= baseContour.length;
+      dstCenter.y /= baseContour.length;
+
+      // Moderate crown lift from oval group.
+      const crownIds = [10, 338, 297, 67, 109];
+      for (const idx of crownIds) {
+        const contourIdx = FACE_CONTOUR_36_INDICES.indexOf(idx);
+        if (contourIdx < 0 || contourIdx >= pairCount) continue;
+        const c = contour[contourIdx];
+        const b = baseContour[contourIdx];
+        src.push({ x: c.x * hairNaturalW, y: c.y * hairNaturalH });
+        dst.push({
+          x: imgProps.x + b.x * imgProps.width,
+          y: imgProps.y + b.y * imgProps.height,
+        });
+        src.push({
+          x: c.x * hairNaturalW + (c.x * hairNaturalW - srcCenter.x) * 0.16,
+          y: c.y * hairNaturalH + (c.y * hairNaturalH - srcCenter.y) * 0.16,
+        });
+        dst.push({
+          x: imgProps.x + b.x * imgProps.width + (imgProps.x + b.x * imgProps.width - dstCenter.x) * 0.22,
+          y: imgProps.y + b.y * imgProps.height + (imgProps.y + b.y * imgProps.height - dstCenter.y) * 0.22,
+        });
+      }
+
+      // Full-head group: explicit top/head-cap anchors (primary for bald coverage).
+      if (headCap?.length && baseHeadCap.length) {
+        const n = Math.min(headCap.length, baseHeadCap.length);
+        for (let i = 0; i < n; i++) {
+          const hs = headCap[i];
+          const hd = baseHeadCap[i];
+          src.push({ x: hs.x * hairNaturalW, y: hs.y * hairNaturalH });
+          dst.push({
+            x: imgProps.x + hd.x * imgProps.width,
+            y: imgProps.y + hd.y * imgProps.height,
+          });
+        }
+      } else if (baseFaceBoxNorm) {
+        // Fallback to box-guided head cap only if explicit head-cap group is unavailable.
+        const lmForehead = baseLandmarks[10];
+        const lmLeftCrown = baseLandmarks[67];
+        const lmRightCrown = baseLandmarks[297];
+        const lmChin = baseLandmarks[152];
+        const lmLeftEar = baseLandmarks[234];
+        const lmRightEar = baseLandmarks[454];
+
+        if (lmForehead && lmLeftCrown && lmRightCrown && lmChin && lmLeftEar && lmRightEar) {
+          const lowerFaceH = Math.max(0.08, lmChin.y - lmForehead.y);
+          const faceBoxTopY = baseFaceBoxNorm.y;
+          const headBoxTopY = Math.max(0, faceBoxTopY - baseFaceBoxNorm.height * 0.42);
+          // Keep lift constrained: enough to hide bald top, but not enough to distort shape.
+          const liftedTopY = Math.max(0, Math.min(lmForehead.y - lowerFaceH * 0.44, headBoxTopY));
+          const headCenterX = (lmLeftEar.x + lmRightEar.x) * 0.5;
+          const headHalfW = Math.max(0.08, Math.abs(lmRightEar.x - lmLeftEar.x) * 0.47);
+
+          const headArchIds = [67, 10, 297];
+          const headArchX = [-0.55, 0, 0.55];
+
+          for (let i = 0; i < headArchIds.length; i++) {
+            const idx = headArchIds[i];
+            const targetXNorm = headCenterX + headHalfW * headArchX[i];
+            const targetYNorm = liftedTopY;
+            const contourIdx = FACE_CONTOUR_36_INDICES.indexOf(idx);
+            if (contourIdx < 0 || contourIdx >= pairCount) continue;
+            const c = contour[contourIdx];
+            src.push({
+              x: c.x * hairNaturalW,
+              y: c.y * hairNaturalH,
+            });
+            dst.push({
+              x: imgProps.x + targetXNorm * imgProps.width,
+              y: imgProps.y + targetYNorm * imgProps.height,
+            });
+          }
+
+          // Stabilize side temples to avoid global affine drift when adding top anchors.
+          const templeIds = [109, 338];
+          for (const idx of templeIds) {
+            const contourIdx = FACE_CONTOUR_36_INDICES.indexOf(idx);
+            if (contourIdx < 0 || contourIdx >= pairCount) continue;
+            const c = contour[contourIdx];
+            const b = baseContour[contourIdx];
+            src.push({ x: c.x * hairNaturalW, y: c.y * hairNaturalH });
+            dst.push({
+              x: imgProps.x + b.x * imgProps.width,
+              y: imgProps.y + b.y * imgProps.height,
+            });
+          }
         }
       }
     }
@@ -269,7 +446,18 @@ export function EditorCanvas({
 
     if (src.length < 2) return null;
     return { src, dst };
-  }, [fitEngine, hairstyle?.calibrationPoints, baseLandmarks, imgProps, activeOverlayImage, hairNaturalW, hairNaturalH]);
+  }, [
+    fitEngine,
+    hairstyle,
+    baseLandmarks,
+    baseFaceBoxNorm,
+    imgProps,
+    activeOverlayImage,
+    hairNaturalW,
+    hairNaturalH,
+    overlayOval36Detected,
+    overlayHeadCapDetected,
+  ]);
 
   const useMlsFit = mlsPoints != null;
   const useCorrespondenceFit = correspondenceTransform != null;
@@ -305,9 +493,8 @@ export function EditorCanvas({
   const heightStretch = hairstyle ? normalizeHairAnchor(hairstyle.anchor).heightStretch : 1;
   const overlayWidth = referenceWidth * activeScale;
   const overlayHeight = overlayWidth * hairRatio * (useMlsFit || useCorrespondenceFit ? 1 : heightStretch);
-  const hasHairCalibrationPoints = !!hairstyle?.calibrationPoints && Object.keys(hairstyle.calibrationPoints).length > 0;
-
   const isManualAdjust = manualTransform != null;
+  const baseLandmarkGroups = useMemo(() => extractLandmarkGroups(baseLandmarks), [baseLandmarks]);
 
   const currentDrawImage = isMlsReady ? warpedCanvas : activeOverlayImage;
   const currentDrawWidth = isMlsReady ? dimensions.width : overlayWidth;
@@ -316,6 +503,90 @@ export function EditorCanvas({
   const currentOffsetY = isMlsReady ? baseCenterY : overlayHeight / 2;
   const currentScaleX = isMlsReady ? activeScale : 1;
   const currentScaleY = isMlsReady ? activeScale : 1;
+  const mapHairNormalizedPointsToCanvas = useCallback(
+    (points: NormalizedPoint2[] | null | undefined): NormalizedPoint2[] | null => {
+      if (!points?.length || !imgProps) return null;
+
+      if (useMlsFit && mlsPoints?.src.length && mlsPoints.dst.length) {
+        const normalized: NormalizedPoint2[] = [];
+        for (const p of points) {
+          const px = p.x * hairNaturalW;
+          const py = p.y * hairNaturalH;
+          let bestIdx = -1;
+          let bestDist = Number.POSITIVE_INFINITY;
+          for (let i = 0; i < mlsPoints.src.length; i++) {
+            const s = mlsPoints.src[i];
+            const dist = (s.x - px) ** 2 + (s.y - py) ** 2;
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestIdx = i;
+            }
+          }
+          if (bestIdx < 0) continue;
+          const d = mlsPoints.dst[bestIdx];
+          normalized.push({
+            x: (d.x - imgProps.x) / imgProps.width,
+            y: (d.y - imgProps.y) / imgProps.height,
+          });
+        }
+        return normalized;
+      }
+
+      const theta = (activeRotation * Math.PI) / 180;
+      const cos = Math.cos(theta);
+      const sin = Math.sin(theta);
+      const drawX = baseCenterX + activeOffsetX;
+      const drawY = baseCenterY + activeOffsetY;
+
+      return points.map((p) => {
+        const lx = p.x * currentDrawWidth;
+        const ly = p.y * currentDrawHeight;
+        const dx = (lx - currentOffsetX) * currentScaleX;
+        const dy = (ly - currentOffsetY) * currentScaleY;
+        const cx = drawX + dx * cos - dy * sin;
+        const cy = drawY + dx * sin + dy * cos;
+        return {
+          x: (cx - imgProps.x) / imgProps.width,
+          y: (cy - imgProps.y) / imgProps.height,
+        };
+      });
+    },
+    [
+      imgProps,
+      useMlsFit,
+      mlsPoints,
+      hairNaturalW,
+      hairNaturalH,
+      activeRotation,
+      baseCenterX,
+      baseCenterY,
+      activeOffsetX,
+      activeOffsetY,
+      currentDrawWidth,
+      currentDrawHeight,
+      currentOffsetX,
+      currentOffsetY,
+      currentScaleX,
+      currentScaleY,
+    ]
+  );
+
+  const mappedHairOvalPoints = useMemo(() => {
+    const oval = hairstyle?.templateOval36?.length ? hairstyle.templateOval36 : overlayOval36Detected;
+    return mapHairNormalizedPointsToCanvas(oval);
+  }, [hairstyle, overlayOval36Detected, mapHairNormalizedPointsToCanvas]);
+
+  const mappedHairHeadCapPoints = useMemo(() => {
+    const headCap = hairstyle?.templateHeadCap?.length ? hairstyle.templateHeadCap : overlayHeadCapDetected;
+    return mapHairNormalizedPointsToCanvas(headCap);
+  }, [hairstyle, overlayHeadCapDetected, mapHairNormalizedPointsToCanvas]);
+
+  const mappedHairCalibrationPoints = useMemo(() => {
+    const calibration = hairstyle?.calibrationPoints;
+    if (!calibration || !imgProps) return null;
+    const points = Object.values(calibration).filter((p): p is { x: number; y: number } => Boolean(p));
+    return mapHairNormalizedPointsToCanvas(points);
+  }, [hairstyle?.calibrationPoints, imgProps, mapHairNormalizedPointsToCanvas]);
 
   const handleOverlayWheel = (event: Konva.KonvaEventObject<WheelEvent>) => {
     event.evt.preventDefault();
@@ -343,6 +614,19 @@ export function EditorCanvas({
       rotation: activeRotation
     });
   };
+
+  useEffect(() => {
+    if (!onOverlayControlsReady) return;
+    onOverlayControlsReady({
+      decreaseOpacity: () => setOverlayOpacity((prev) => Math.max(0.2, prev - 0.1)),
+      increaseOpacity: () => setOverlayOpacity((prev) => Math.min(1, prev + 0.1)),
+      resetOverlay: () => {
+        setManualTransform(null);
+        setOverlayOpacity(1);
+      },
+    });
+    return () => onOverlayControlsReady(null);
+  }, [onOverlayControlsReady]);
 
   useEffect(() => {
     if (!onExportReady) return;
@@ -422,6 +706,22 @@ export function EditorCanvas({
             {showFaceLandmarks && imgProps && (
               <FaceLandmarkDots landmarks={baseLandmarks} imgProps={imgProps} />
             )}
+            {showFaceContourDebug && imgProps && baseLandmarkGroups.oval36.length > 0 && (
+              <FaceLandmarkDots
+                points={baseLandmarkGroups.oval36}
+                imgProps={imgProps}
+                color="rgba(16,185,129,0.85)"
+                radius={3.5}
+              />
+            )}
+            {showFaceContourDebug && imgProps && baseLandmarkGroups.headCap.length > 0 && (
+              <FaceLandmarkDots
+                points={baseLandmarkGroups.headCap}
+                imgProps={imgProps}
+                color="rgba(14,165,233,0.9)"
+                radius={3.3}
+              />
+            )}
             {activeOverlayImage && currentDrawImage && imgProps && (
               <>
                 <KonvaImage
@@ -466,29 +766,34 @@ export function EditorCanvas({
                   />
                 )}
                 {showHairLandmarks &&
-                  hairstyle?.calibrationPoints &&
-                  Object.values(hairstyle.calibrationPoints).map((point, index) => {
-                    if (!point) return null;
-                    const localX = (point.x - 0.5) * overlayWidth;
-                    const localY = (point.y - 0.5) * overlayHeight;
-                    const theta = (activeRotation * Math.PI) / 180;
-                    const rx = localX * Math.cos(theta) - localY * Math.sin(theta);
-                    const ry = localX * Math.sin(theta) + localY * Math.cos(theta);
-                    const cx = baseCenterX + activeOffsetX + rx;
-                    const cy = baseCenterY + activeOffsetY + ry;
-                    return (
-                      <Circle
-                        key={`hair-lm-${index}`}
-                        x={cx}
-                        y={cy}
-                        radius={4}
-                        fill="#7c3aed"
-                        stroke="#ffffff"
-                        strokeWidth={1.5}
-                        listening={false}
-                      />
-                    );
-                  })}
+                  mappedHairCalibrationPoints?.map((point, index) => (
+                    <Circle
+                      key={`hair-lm-${index}`}
+                      x={point.x}
+                      y={point.y}
+                      radius={4}
+                      fill="#7c3aed"
+                      stroke="#ffffff"
+                      strokeWidth={1.5}
+                      listening={false}
+                    />
+                  ))}
+                {showHairContourDebug && mappedHairOvalPoints?.length && (
+                  <FaceLandmarkDots
+                    points={mappedHairOvalPoints}
+                    imgProps={imgProps}
+                    color="rgba(236,72,153,0.95)"
+                    radius={3.6}
+                  />
+                )}
+                {showHairContourDebug && mappedHairHeadCapPoints?.length && (
+                  <FaceLandmarkDots
+                    points={mappedHairHeadCapPoints}
+                    imgProps={imgProps}
+                    color="rgba(249,115,22,0.95)"
+                    radius={3.2}
+                  />
+                )}
               </>
             )}
           </Layer>
@@ -496,75 +801,7 @@ export function EditorCanvas({
       </div>
 
       {/* Overlays */}
-      <div className="absolute bottom-6 left-6 right-6 flex items-end justify-between z-10 pointer-events-none">
-        <div className="pointer-events-auto">
-          <div className="flex items-center gap-2">
-            {sourceProfileImageUrl && (
-              <button
-                type="button"
-                onClick={() => setShowFaceLandmarks((v) => !v)}
-                className={`flex items-center gap-2 rounded-full px-3 py-2 text-xs font-bold shadow-lg transition-colors ${
-                  showFaceLandmarks
-                    ? "bg-violet-600 text-white"
-                    : "bg-white/80 text-slate-700 backdrop-blur-md dark:bg-slate-900/80 dark:text-slate-200"
-                }`}
-                aria-pressed={showFaceLandmarks}
-                aria-label={showFaceLandmarks ? "Hide face landmarks" : "Show face landmarks"}
-              >
-                <span className="material-symbols-outlined text-base">scatter_plot</span>
-                {showFaceLandmarks ? "Hide face landmarks" : "Show face landmarks"}
-              </button>
-            )}
-            {hasHairCalibrationPoints && (
-              <button
-                type="button"
-                onClick={() => setShowHairLandmarks((v) => !v)}
-                className={`flex items-center gap-2 rounded-full px-3 py-2 text-xs font-bold shadow-lg transition-colors ${
-                  showHairLandmarks
-                    ? "bg-indigo-600 text-white"
-                    : "bg-white/80 text-slate-700 backdrop-blur-md dark:bg-slate-900/80 dark:text-slate-200"
-                }`}
-                aria-pressed={showHairLandmarks}
-                aria-label={showHairLandmarks ? "Hide hair landmarks" : "Show hair landmarks"}
-              >
-                <span className="material-symbols-outlined text-base">join_inner</span>
-                {showHairLandmarks ? "Hide hair landmarks" : "Show hair landmarks"}
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="flex gap-2 pointer-events-auto">
-          <button
-            type="button"
-            onClick={() => setOverlayOpacity((prev) => Math.max(0.2, prev - 0.1))}
-            className="flex size-12 items-center justify-center rounded-full bg-white/80 backdrop-blur-md text-slate-900 shadow-lg hover:bg-white transition-colors dark:bg-slate-900/80 dark:text-white"
-            aria-label="Decrease hair layer opacity"
-          >
-            <span className="material-symbols-outlined">visibility_off</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setOverlayOpacity((prev) => Math.min(1, prev + 0.1))}
-            className="flex size-12 items-center justify-center rounded-full bg-white/80 backdrop-blur-md text-slate-900 shadow-lg hover:bg-white transition-colors dark:bg-slate-900/80 dark:text-white"
-            aria-label="Increase hair layer opacity"
-          >
-            <span className="material-symbols-outlined">visibility</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setManualTransform(null);
-              setOverlayOpacity(1);
-            }}
-            className="flex size-12 items-center justify-center rounded-full bg-white/80 backdrop-blur-md text-slate-900 shadow-lg hover:bg-white transition-colors dark:bg-slate-900/80 dark:text-white"
-            aria-label="Reset hair layer transform"
-          >
-            <span className="material-symbols-outlined">
-              {autoFitTransform || useMlsFit || useCorrespondenceFit ? "auto_fix_high" : "refresh"}
-            </span>
-          </button>
-        </div>
-      </div>
+      <div className="absolute bottom-6 left-6 right-6 z-10 pointer-events-none" />
 
       {/* Fit mode indicator */}
       {!isDetecting &&
@@ -649,8 +886,10 @@ export function EditorCanvas({
 
 function createTintedHairMask(image: HTMLImageElement | HTMLCanvasElement, hex: string) {
   const canvas = document.createElement("canvas");
-  canvas.width = (image as any).naturalWidth || image.width;
-  canvas.height = (image as any).naturalHeight || image.height;
+  const width = image instanceof HTMLImageElement ? image.naturalWidth || image.width : image.width;
+  const height = image instanceof HTMLImageElement ? image.naturalHeight || image.height : image.height;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext("2d");
   if (!ctx) return canvas;
 

@@ -1,9 +1,11 @@
-import type { HairCalibrationPoints } from "@/lib/image/face-landmarks";
+import type { HairCalibrationPoints, NormalizedPoint2 } from "@/lib/image/face-landmarks";
 
 const STORAGE_KEY = "fashion.editor.hairCalibrationOverrides.v1";
 
 export type HairCalibrationOverride = {
   points: HairCalibrationPoints;
+  templateOval36?: NormalizedPoint2[];
+  templateHeadCap?: NormalizedPoint2[];
   confidence?: number;
   quality?: "high" | "medium" | "low";
   warnings?: string[];
@@ -26,6 +28,11 @@ function isLegacyPointsMap(value: unknown): value is HairCalibrationPoints {
   return true;
 }
 
+function isPointArray(value: unknown): value is NormalizedPoint2[] {
+  if (!Array.isArray(value)) return false;
+  return value.every((item) => isPoint(item));
+}
+
 function normalizeOverride(value: unknown): HairCalibrationOverride | null {
   if (!value || typeof value !== "object") return null;
 
@@ -38,6 +45,8 @@ function normalizeOverride(value: unknown): HairCalibrationOverride | null {
 
   return {
     points: entry.points,
+    templateOval36: isPointArray(entry.templateOval36) ? entry.templateOval36 : undefined,
+    templateHeadCap: isPointArray(entry.templateHeadCap) ? entry.templateHeadCap : undefined,
     confidence: typeof entry.confidence === "number" ? entry.confidence : undefined,
     quality:
       entry.quality === "high" || entry.quality === "medium" || entry.quality === "low"
