@@ -160,6 +160,11 @@ export default function EditorPage() {
   );
   const hasHairCalibrationPoints = !!selectedHairstyle?.calibrationPoints && Object.keys(selectedHairstyle.calibrationPoints).length > 0;
   const hasTemplateContour = !!selectedVariation;
+  const allDetectionsEnabled =
+    showFaceLandmarks &&
+    showFaceContourDebug &&
+    (!hasHairCalibrationPoints || showHairLandmarks) &&
+    (!hasTemplateContour || showHairContourDebug);
 
   // When hairstyle changes, reset variation to first available
   const handleSelectHairstyle = (id: string) => {
@@ -489,6 +494,21 @@ export default function EditorPage() {
             {!isDebugSidebarCollapsed && (
               <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">Shared controls for both photo canvases.</p>
+                <label className="flex items-center justify-between rounded-lg border border-violet-200 bg-violet-50/60 px-3 py-2 text-xs font-semibold text-violet-800 dark:border-violet-800/60 dark:bg-violet-900/20 dark:text-violet-200">
+                  All detections
+                  <input
+                    type="checkbox"
+                    checked={allDetectionsEnabled}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      setShowFaceLandmarks(enabled);
+                      setShowFaceContourDebug(enabled);
+                      setShowHairLandmarks(enabled && hasHairCalibrationPoints);
+                      setShowHairContourDebug(enabled && hasTemplateContour);
+                    }}
+                    className="h-4 w-4 accent-violet-600"
+                  />
+                </label>
                 <label className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">
                   Face landmarks
                   <input

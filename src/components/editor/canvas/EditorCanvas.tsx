@@ -7,6 +7,7 @@ import type Konva from "konva";
 import { normalizeHairAnchor } from "@/config/hair-anchors";
 import {
   detectFaceLandmarksNormalized,
+  estimateSkullTopY,
   extractLandmarkGroups,
   FACE_CONTOUR_36_INDICES,
   HEAD_CAP_INDICES,
@@ -278,7 +279,7 @@ export function EditorCanvas({
 
   const mlsPoints = useMemo(() => {
     if (fitEngine !== "mls" || !hairstyle || !baseLandmarks?.length || !imgProps || !activeOverlayImage) return null;
-    
+
     const src: Point2[] = [];
     const dst: Point2[] = [];
     const calib = hairstyle.calibrationPoints ?? {};
@@ -309,117 +310,127 @@ export function EditorCanvas({
       }
     };
 
-    // Balanced blend: oval anchors dominate shape, head-cap anchors improve coverage.
-    pairGroup(hairOval, baseGroups.oval36, FACE_CONTOUR_36_INDICES, 2);
-    pairGroup(hairHeadCap, baseGroups.headCap, HEAD_CAP_INDICES, 1);
+    const pickByIds = (
+      points: NormalizedPoint2[] | null | undefined,
+      allIds: readonly number[],
+      keepIds: readonly number[]
+    ): { id: number; point: NormalizedPoint2 }[] => {
+      if (!points?.length) return [];
+      const out: { id: number; point: NormalizedPoint2 }[] = [];
+      for (const id of keepIds) {
+        const idx = allIds.indexOf(id);
+        if (idx < 0 || idx >= points.length) continue;
+        const point = points[idx];
+        if (!point) continue;
+        out.push({ id, point });
+      }
+      return out;
+    };
 
-    if (hairOval?.length && baseGroups.oval36.length) {
-      const pairCount = Math.min(hairOval.length, baseGroups.oval36.length);
-      const contour = hairOval;
-      const baseContour = baseGroups.oval36;
-      const headCap = hairHeadCap;
-      const baseHeadCap = baseGroups.headCap;
-      const srcCenter = contour.reduce(
-        (acc, p) => ({ x: acc.x + p.x * hairNaturalW, y: acc.y + p.y * hairNaturalH }),
-        { x: 0, y: 0 }
-      );
-      srcCenter.x /= contour.length;
-      srcCenter.y /= contour.length;
-      const dstCenter = baseContour.reduce(
-        (acc, p) => ({
-          x: acc.x + (imgProps.x + p.x * imgProps.width),
-          y: acc.y + (imgProps.y + p.y * imgProps.height),
-        }),
-        { x: 0, y: 0 }
-      );
-      dstCenter.x /= baseContour.length;
-      dstCenter.y /= baseContour.length;
+    // T-zone focused oval points: temples + upper cheeks + forehead arc (jaw/chin removed).
+    const keptOvalIds = [127, 109, 67, 10, 338, 297, 356, 103, 332, 54] as const;
+    const srcOvalPairs = pickByIds(hairOval, FACE_CONTOUR_36_INDICES, keptOvalIds);
+    const dstOvalPairs = pickByIds(baseGroups.oval36, FACE_CONTOUR_36_INDICES, keptOvalIds);
+    const dstOvalById = new Map(dstOvalPairs.map((entry) => [entry.id, entry.point]));
+    const srcOvalById = new Map(srcOvalPairs.map((entry) => [entry.id, entry.point]));
 
-      // Moderate crown lift from oval group.
-      const crownIds = [10, 338, 297, 67, 109];
-      for (const idx of crownIds) {
-        const contourIdx = FACE_CONTOUR_36_INDICES.indexOf(idx);
-        if (contourIdx < 0 || contourIdx >= pairCount) continue;
-        const c = contour[contourIdx];
-        const b = baseContour[contourIdx];
-        src.push({ x: c.x * hairNaturalW, y: c.y * hairNaturalH });
+    for (const { id, point: s } of srcOvalPairs) {
+      const d = dstOvalById.get(id);
+      if (!d) continue;
+      const repeat = id === 109 || id === 338 ? 4 : id === 10 ? 3 : 2;
+      for (let r = 0; r < repeat; r++) {
+        src.push({ x: s.x * hairNaturalW, y: s.y * hairNaturalH });
         dst.push({
-          x: imgProps.x + b.x * imgProps.width,
-          y: imgProps.y + b.y * imgProps.height,
-        });
-        src.push({
-          x: c.x * hairNaturalW + (c.x * hairNaturalW - srcCenter.x) * 0.16,
-          y: c.y * hairNaturalH + (c.y * hairNaturalH - srcCenter.y) * 0.16,
-        });
-        dst.push({
-          x: imgProps.x + b.x * imgProps.width + (imgProps.x + b.x * imgProps.width - dstCenter.x) * 0.22,
-          y: imgProps.y + b.y * imgProps.height + (imgProps.y + b.y * imgProps.height - dstCenter.y) * 0.22,
+          x: imgProps.x + d.x * imgProps.width,
+          y: imgProps.y + d.y * imgProps.height,
         });
       }
+      usedIndices.add(id);
+    }
 
-      // Full-head group: explicit top/head-cap anchors (primary for bald coverage).
-      if (headCap?.length && baseHeadCap.length) {
-        const n = Math.min(headCap.length, baseHeadCap.length);
-        for (let i = 0; i < n; i++) {
-          const hs = headCap[i];
-          const hd = baseHeadCap[i];
-          src.push({ x: hs.x * hairNaturalW, y: hs.y * hairNaturalH });
-          dst.push({
-            x: imgProps.x + hd.x * imgProps.width,
-            y: imgProps.y + hd.y * imgProps.height,
+    // Reduced head-cap points (max 5): top-center, upper corners, temples.
+    const keptHeadCapIds = [10, 67, 297, 109, 338] as const;
+    const srcHeadCapPairs = pickByIds(hairHeadCap, HEAD_CAP_INDICES, keptHeadCapIds);
+    const dstHeadCapPairs = pickByIds(baseGroups.headCap, HEAD_CAP_INDICES, keptHeadCapIds);
+    const skullTopY = estimateSkullTopY(baseLandmarks);
+    const eyeLineY = (() => {
+      const left = baseLandmarks[33];
+      const right = baseLandmarks[263];
+      return left && right ? (left.y + right.y) * 0.5 : null;
+    })();
+
+    // Optional temple/corner smoothing around the eye-line to prevent bumpy domes.
+    const smoothedDstById = new Map<number, NormalizedPoint2>();
+    for (const entry of dstHeadCapPairs) {
+      smoothedDstById.set(entry.id, { ...entry.point });
+    }
+    if (eyeLineY != null) {
+      const leftCorner = smoothedDstById.get(67);
+      const rightCorner = smoothedDstById.get(297);
+      if (leftCorner && rightCorner) {
+        const avgOffset = ((leftCorner.y - eyeLineY) + (rightCorner.y - eyeLineY)) * 0.5;
+        leftCorner.y = eyeLineY + avgOffset;
+        rightCorner.y = eyeLineY + avgOffset;
+      }
+      const leftTemple = smoothedDstById.get(109);
+      const rightTemple = smoothedDstById.get(338);
+      if (leftTemple && rightTemple) {
+        const avgOffset = ((leftTemple.y - eyeLineY) + (rightTemple.y - eyeLineY)) * 0.5;
+        leftTemple.y = eyeLineY + avgOffset;
+        rightTemple.y = eyeLineY + avgOffset;
+      }
+    }
+
+    for (const { id, point: s } of srcHeadCapPairs) {
+      const d = smoothedDstById.get(id);
+      if (!d) continue;
+      const repeat = id === 10 || id === 109 || id === 338 ? 5 : 2;
+      for (let r = 0; r < repeat; r++) {
+        src.push({ x: s.x * hairNaturalW, y: s.y * hairNaturalH });
+        dst.push({
+          x: imgProps.x + d.x * imgProps.width,
+          y: imgProps.y + d.y * imgProps.height,
+        });
+      }
+      usedIndices.add(id);
+    }
+
+    // Synthetic crown pull: keep hairline pinned while stretching only upper hair volume.
+    if (skullTopY != null) {
+      const leftTempleX = smoothedDstById.get(109)?.x ?? dstOvalById.get(109)?.x;
+      const rightTempleX = smoothedDstById.get(338)?.x ?? dstOvalById.get(338)?.x;
+      const hasTempleCenter = leftTempleX != null && rightTempleX != null;
+      const crownCenterX = hasTempleCenter
+        ? (leftTempleX + rightTempleX) * 0.5
+        : ((baseLandmarks[109]?.x ?? 0.5) + (baseLandmarks[338]?.x ?? 0.5)) * 0.5;
+
+      for (let i = 0; i < 8; i++) {
+        src.push({
+          x: 0.5 * hairNaturalW,
+          y: 0.02 * hairNaturalH,
+        });
+        dst.push({
+          x: imgProps.x + crownCenterX * imgProps.width,
+          y: imgProps.y + skullTopY * imgProps.height,
+        });
+      }
+    }
+
+    // Safety fallback if no head-cap data exists: still enforce a strong crown anchor.
+    if (!srcHeadCapPairs.length && skullTopY != null) {
+      const leftTempleX = dstOvalById.get(109)?.x ?? baseLandmarks[109]?.x;
+      const rightTempleX = dstOvalById.get(338)?.x ?? baseLandmarks[338]?.x;
+      if (leftTempleX != null && rightTempleX != null) {
+        const crownCenterX = (leftTempleX + rightTempleX) * 0.5;
+        for (let i = 0; i < 8; i++) {
+          src.push({
+            x: 0.5 * hairNaturalW,
+            y: 0.02 * hairNaturalH,
           });
-        }
-      } else if (baseFaceBoxNorm) {
-        // Fallback to box-guided head cap only if explicit head-cap group is unavailable.
-        const lmForehead = baseLandmarks[10];
-        const lmLeftCrown = baseLandmarks[67];
-        const lmRightCrown = baseLandmarks[297];
-        const lmChin = baseLandmarks[152];
-        const lmLeftEar = baseLandmarks[234];
-        const lmRightEar = baseLandmarks[454];
-
-        if (lmForehead && lmLeftCrown && lmRightCrown && lmChin && lmLeftEar && lmRightEar) {
-          const lowerFaceH = Math.max(0.08, lmChin.y - lmForehead.y);
-          const faceBoxTopY = baseFaceBoxNorm.y;
-          const headBoxTopY = Math.max(0, faceBoxTopY - baseFaceBoxNorm.height * 0.42);
-          // Keep lift constrained: enough to hide bald top, but not enough to distort shape.
-          const liftedTopY = Math.max(0, Math.min(lmForehead.y - lowerFaceH * 0.44, headBoxTopY));
-          const headCenterX = (lmLeftEar.x + lmRightEar.x) * 0.5;
-          const headHalfW = Math.max(0.08, Math.abs(lmRightEar.x - lmLeftEar.x) * 0.47);
-
-          const headArchIds = [67, 10, 297];
-          const headArchX = [-0.55, 0, 0.55];
-
-          for (let i = 0; i < headArchIds.length; i++) {
-            const idx = headArchIds[i];
-            const targetXNorm = headCenterX + headHalfW * headArchX[i];
-            const targetYNorm = liftedTopY;
-            const contourIdx = FACE_CONTOUR_36_INDICES.indexOf(idx);
-            if (contourIdx < 0 || contourIdx >= pairCount) continue;
-            const c = contour[contourIdx];
-            src.push({
-              x: c.x * hairNaturalW,
-              y: c.y * hairNaturalH,
-            });
-            dst.push({
-              x: imgProps.x + targetXNorm * imgProps.width,
-              y: imgProps.y + targetYNorm * imgProps.height,
-            });
-          }
-
-          // Stabilize side temples to avoid global affine drift when adding top anchors.
-          const templeIds = [109, 338];
-          for (const idx of templeIds) {
-            const contourIdx = FACE_CONTOUR_36_INDICES.indexOf(idx);
-            if (contourIdx < 0 || contourIdx >= pairCount) continue;
-            const c = contour[contourIdx];
-            const b = baseContour[contourIdx];
-            src.push({ x: c.x * hairNaturalW, y: c.y * hairNaturalH });
-            dst.push({
-              x: imgProps.x + b.x * imgProps.width,
-              y: imgProps.y + b.y * imgProps.height,
-            });
-          }
+          dst.push({
+            x: imgProps.x + crownCenterX * imgProps.width,
+            y: imgProps.y + skullTopY * imgProps.height,
+          });
         }
       }
     }

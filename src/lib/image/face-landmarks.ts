@@ -69,6 +69,8 @@ export const MIN_CALIBRATION_POINTS_FOR_SIMILARITY = 2;
 const HAIRLINE_ABOVE_EYE_FACTOR = 0.38;
 /** Ear–ear span is wider than the face opening in typical hair PNGs; scale down for width. */
 const EAR_WIDTH_TO_FACE_OPENING = 0.69;
+/** Golden-ratio inspired upper skull lift from eye center to crown. */
+const SKULL_TOP_ABOVE_EYE_FACTOR = 1.15;
 
 export type HeadPosition = {
   foreheadCenter: { x: number; y: number };
@@ -173,6 +175,27 @@ export function extractLandmarkGroups(
     oval36: pickLandmarkPoints(landmarks, FACE_OVAL_36_INDICES),
     headCap: pickLandmarkPoints(landmarks, HEAD_CAP_INDICES),
   };
+}
+
+/**
+ * Estimate the true top-of-skull Y from facial proportions.
+ * Uses eye-center -> chin distance, then extends upward by 1.15x that span.
+ */
+export function estimateSkullTopY(
+  landmarks: NormalizedLandmark[] | null | undefined
+): number | null {
+  if (!landmarks?.length) return null;
+  const leftEye = landmarks[SEMANTIC_LANDMARK_INDICES.leftEye];
+  const rightEye = landmarks[SEMANTIC_LANDMARK_INDICES.rightEye];
+  const chin = landmarks[SEMANTIC_LANDMARK_INDICES.chin];
+  if (!leftEye || !rightEye || !chin) return null;
+
+  const eyeCenterY = (leftEye.y + rightEye.y) * 0.5;
+  const faceHeight = Math.abs(chin.y - eyeCenterY);
+  if (!Number.isFinite(faceHeight) || faceHeight <= 0) return null;
+
+  const estimatedTopY = eyeCenterY - faceHeight * SKULL_TOP_ABOVE_EYE_FACTOR;
+  return Math.max(0, Math.min(1, estimatedTopY));
 }
 
 async function detectHeadPositionFromLandmarks(image: HTMLImageElement): Promise<HeadPosition | null> {
