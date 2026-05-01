@@ -1,0 +1,54 @@
+name: Build OpenCV Poisson Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/build-opencv-poisson.sh"
+      - "scripts/build-opencv-poisson.md"
+      - ".github/workflows/build-opencv-poisson.yml"
+
+jobs:
+  build-opencv-js:
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:4.0.10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone OpenCV
+        run: |
+          git clone --branch 4.12.0 --depth 1 https://github.com/opencv/opencv.git /tmp/opencv
+
+      - name: Inject seamlessClone export
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          cfg = Path('/tmp/opencv/platforms/js/opencv_js.config.py')
+          text = cfg.read_text()
+          if "'seamlessClone'" not in text:
+              marker = "'illuminationChange'"
+              if marker not in text:
+                  raise SystemExit('Could not find photo marker')
+              text = text.replace(marker, marker + ",\n        'seamlessClone'")
+          cfg.write_text(text)
+          print('Patched:', cfg)
+          PY
+
+      - name: Build opencv.js
+        run: |
+          cd /tmp/opencv
+          emcmake python3 ./platforms/js/build_js.py build_js --build_wasm
+
+      - name: Collect artifact
+        run: |
+          mkdir -p public/vendor
+          cp /tmp/opencv/build_js/bin/opencv.js public/vendor/opencv-custom.js
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencv-custom-js
+          path: public/vendor/opencv-custom.js

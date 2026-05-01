@@ -42,6 +42,7 @@ import {
   preprocessUploadedHairTemplateWithFallback,
   type HairDetachMode,
 } from "@/lib/image/hair-template-preprocess";
+import { ensureOpenCvLoaded } from "@/lib/image/load-opencv";
 
 const prebuiltHairstyles: HairstyleTemplate[] = Array.from({ length: 10 }, (_, i) => {
   const id = `hair-${i + 1}`;
@@ -91,6 +92,16 @@ export default function EditorPage() {
     queueMicrotask(() => {
       setSourceProfile(getEditorSourceProfileFromDraft());
     });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void ensureOpenCvLoaded().then(() => {
+      if (cancelled) return;
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {

@@ -21,6 +21,7 @@ import { useHairAutoFit } from "./use-hair-auto-fit";
 import { MLSWarpCanvas } from "./MLSWarpCanvas";
 import { type Point2 } from "@/lib/image/mlsWarp";
 import { SEMANTIC_LANDMARK_INDICES, type SemanticLandmarkId } from "@/lib/image/face-landmarks";
+import { useOpenCvReady } from "@/lib/image/use-opencv-ready";
 
 type Props = {
   hairstyle: HairstyleTemplate | null;
@@ -43,6 +44,7 @@ type Props = {
   onExportReady?: ((exportFn: (() => void) | null) => void) | undefined;
   fitEngine?: "affine" | "mls";
   title?: string;
+  poissonBlendApplied?: boolean;
 };
 
 export function EditorCanvas({
@@ -58,6 +60,7 @@ export function EditorCanvas({
   onExportReady,
   fitEngine = "mls",
   title,
+  poissonBlendApplied = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage | null>(null);
@@ -71,6 +74,7 @@ export function EditorCanvas({
   const [overlayHeadCapDetected, setOverlayHeadCapDetected] = useState<NormalizedPoint2[] | null>(null);
   const [baseFaceBoxNorm, setBaseFaceBoxNorm] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [warpedCanvas, setWarpedCanvas] = useState<HTMLCanvasElement | null>(null);
+  const { ready: isOpenCvReady, error: openCvError } = useOpenCvReady();
   const mlsImageRef = useRef<Konva.Image>(null);
 
   const handleCanvasReady = useCallback((c: HTMLCanvasElement) => {
@@ -506,6 +510,18 @@ export function EditorCanvas({
   const overlayHeight = overlayWidth * hairRatio * (useMlsFit || useCorrespondenceFit ? 1 : heightStretch);
   const isManualAdjust = manualTransform != null;
   const baseLandmarkGroups = useMemo(() => extractLandmarkGroups(baseLandmarks), [baseLandmarks]);
+  const poissonBlendStatusLabel = poissonBlendApplied
+    ? "Poisson Blend: Applied"
+    : isOpenCvReady
+      ? "Poisson Blend: Off"
+      : openCvError?.includes("does not expose seamlessClone")
+        ? "Poisson Blend: Unsupported OpenCV build"
+        : "Poisson Blend: Unavailable";
+  const poissonBlendStatusClass = poissonBlendApplied
+    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+    : isOpenCvReady
+      ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+      : "bg-slate-500/15 text-slate-700 dark:text-slate-300";
 
   const currentDrawImage = isMlsReady ? warpedCanvas : activeOverlayImage;
   const currentDrawWidth = isMlsReady ? dimensions.width : overlayWidth;
@@ -891,6 +907,15 @@ export function EditorCanvas({
         {title && <span className="opacity-80 border-r border-white/30 pr-2">{title}</span>}
         {sourceProfileImageUrl ? "Base Photo" : "Add Photo"}
       </div>
+
+      {/* Poisson blending indicator */}
+      {sourceProfileImageUrl && selectedVariation && (
+        <div
+          className={`absolute bottom-6 right-6 px-3 py-1.5 rounded-full text-xs font-bold shadow-sm z-10 ${poissonBlendStatusClass}`}
+        >
+          {poissonBlendStatusLabel}
+        </div>
+      )}
     </div>
   );
 }
