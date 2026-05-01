@@ -1,7 +1,9 @@
 import {
+  extractLandmarkGroups,
   SEMANTIC_LANDMARK_INDICES,
   detectFaceLandmarksNormalized,
   type HairCalibrationPoints,
+  type NormalizedPoint2,
 } from "@/lib/image/face-landmarks";
 
 export type HairCalibrationQuality = "high" | "medium" | "low";
@@ -10,6 +12,8 @@ export type HairTemplatePreprocessResult = {
   imageUrl: string;
   sourceImageUrl?: string;
   calibrationPoints?: HairCalibrationPoints;
+  templateOval36?: NormalizedPoint2[];
+  templateHeadCap?: NormalizedPoint2[];
   calibrationConfidence?: number;
   calibrationQuality?: HairCalibrationQuality;
   calibrationWarnings?: string[];
@@ -553,6 +557,13 @@ export async function preprocessUploadedHairTemplateFromDataUrl(
   }
   const extractedDataUrl = toDataUrl(extracted);
   const remappedPoints = remapCalibrationPointsToCrop(semantic, crop, image);
+  const groups = extractLandmarkGroups(detection.landmarks);
+  const toCropNorm = (point: NormalizedPoint2) => ({
+    x: clamp01((point.x * (image.naturalWidth || image.width || 1) - crop.x) / Math.max(EPS, crop.width)),
+    y: clamp01((point.y * (image.naturalHeight || image.height || 1) - crop.y) / Math.max(EPS, crop.height)),
+  });
+  const templateOval36 = groups.oval36.map(toCropNorm);
+  const templateHeadCap = groups.headCap.map(toCropNorm);
   const validation = validateCalibrationPoints(remappedPoints);
 
   const baseConfidence = 0.86;
@@ -563,6 +574,8 @@ export async function preprocessUploadedHairTemplateFromDataUrl(
     imageUrl: extractedDataUrl,
     sourceImageUrl: originalDataUrl,
     calibrationPoints: isCalibrationPointMap(remappedPoints) ? remappedPoints : undefined,
+    templateOval36: templateOval36.length ? templateOval36 : undefined,
+    templateHeadCap: templateHeadCap.length ? templateHeadCap : undefined,
     calibrationConfidence: confidence,
     calibrationQuality: quality,
     calibrationWarnings: validation.warnings,

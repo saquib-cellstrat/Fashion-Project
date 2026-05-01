@@ -1,4 +1,4 @@
-import type { HairCalibrationPoints, SemanticLandmarkId } from "@/lib/image/face-landmarks";
+import type { HairCalibrationPoints, NormalizedPoint2, SemanticLandmarkId } from "@/lib/image/face-landmarks";
 
 export type { HairCalibrationPoints, SemanticLandmarkId };
 
@@ -43,6 +43,10 @@ export type HairstyleTemplate = {
   anchor?: HairAnchor;
   /** Optional per-PNG landmark placement for correspondence-based fit (overrides anchor auto-fit when complete). */
   calibrationPoints?: HairCalibrationPoints;
+  /** Optional template-side oval-face 36-point contour in template-local normalized space (0-1). */
+  templateOval36?: NormalizedPoint2[];
+  /** Optional template-side full-head/bald-cap contour in template-local normalized space (0-1). */
+  templateHeadCap?: NormalizedPoint2[];
   calibrationConfidence?: number;
   calibrationQuality?: "high" | "medium" | "low";
   calibrationWarnings?: string[];

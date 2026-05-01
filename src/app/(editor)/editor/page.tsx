@@ -18,7 +18,6 @@ import { EditorIconToolbar } from "@/components/editor/left-sidebar/EditorIconTo
 import { EditorLeftPanel } from "@/components/editor/left-sidebar/EditorLeftPanel";
 import { EditorCanvas } from "@/components/editor/canvas/EditorCanvas";
 import { EditorVariationTray } from "@/components/editor/bottom-tray/EditorVariationTray";
-import { EditorRightSidebar } from "@/components/editor/right-sidebar/EditorRightSidebar";
 import { getEditorSourceProfileFromDraft } from "@/lib/storage/onboarding-draft";
 import { routes } from "@/config/routes";
 import {
@@ -67,12 +66,25 @@ export default function EditorPage() {
   const [tryOnEnabled, setTryOnEnabled] = useState(false);
   const [isProcessingUploads, setIsProcessingUploads] = useState(false);
   const [isReprocessingHairstyle, setIsReprocessingHairstyle] = useState(false);
+  const [showFaceLandmarks, setShowFaceLandmarks] = useState(false);
+  const [showHairLandmarks, setShowHairLandmarks] = useState(false);
+  const [showFaceContourDebug, setShowFaceContourDebug] = useState(false);
+  const [showHairContourDebug, setShowHairContourDebug] = useState(false);
+  const [isDebugSidebarCollapsed, setIsDebugSidebarCollapsed] = useState(false);
+  const [legacyOverlayControls, setLegacyOverlayControls] = useState<{
+    decreaseOpacity: () => void;
+    increaseOpacity: () => void;
+    resetOverlay: () => void;
+  } | null>(null);
+  const [mlsOverlayControls, setMlsOverlayControls] = useState<{
+    decreaseOpacity: () => void;
+    increaseOpacity: () => void;
+    resetOverlay: () => void;
+  } | null>(null);
   const [exportEditorImage, setExportEditorImage] = useState<(() => void) | null>(null);
   const handleExportReady = useCallback((exportFn: (() => void) | null) => {
     setExportEditorImage((prev) => (prev === exportFn ? prev : exportFn));
   }, []);
-
-  const [showRightSidebar, setShowRightSidebar] = useState(true);
   /** Read after mount so SSR and first client paint match (avoids localStorage hydration mismatch). */
   const [sourceProfile, setSourceProfile] = useState<EditorSourceProfile | null>(null);
   useEffect(() => {
@@ -106,6 +118,8 @@ export default function EditorPage() {
             next = {
               ...next,
               calibrationPoints: cal.points,
+              templateOval36: cal.templateOval36,
+              templateHeadCap: cal.templateHeadCap,
               calibrationConfidence: cal.confidence,
               calibrationQuality: cal.quality,
               calibrationWarnings: cal.warnings,
@@ -144,6 +158,13 @@ export default function EditorPage() {
     () => colorSwatches.find((color) => color.id === selectedColorId) ?? null,
     [selectedColorId]
   );
+  const hasHairCalibrationPoints = !!selectedHairstyle?.calibrationPoints && Object.keys(selectedHairstyle.calibrationPoints).length > 0;
+  const hasTemplateContour = !!selectedVariation;
+  const allDetectionsEnabled =
+    showFaceLandmarks &&
+    showFaceContourDebug &&
+    (!hasHairCalibrationPoints || showHairLandmarks) &&
+    (!hasTemplateContour || showHairContourDebug);
 
   // When hairstyle changes, reset variation to first available
   const handleSelectHairstyle = (id: string) => {
@@ -214,6 +235,8 @@ export default function EditorPage() {
         return {
           ...h,
           calibrationPoints: keys.length ? calibration : undefined,
+          templateOval36: keys.length ? h.templateOval36 : undefined,
+          templateHeadCap: keys.length ? h.templateHeadCap : undefined,
           calibrationConfidence: keys.length ? h.calibrationConfidence : undefined,
           calibrationQuality: keys.length ? h.calibrationQuality : undefined,
           calibrationWarnings: keys.length ? h.calibrationWarnings : undefined,
@@ -228,6 +251,8 @@ export default function EditorPage() {
         if (!row?.calibrationPoints) return next;
         const payload: HairCalibrationOverride = {
           points: row.calibrationPoints,
+          templateOval36: row.templateOval36,
+          templateHeadCap: row.templateHeadCap,
           confidence: row.calibrationConfidence,
           quality: row.calibrationQuality,
           warnings: row.calibrationWarnings,
@@ -246,6 +271,8 @@ export default function EditorPage() {
           ? {
               ...h,
               calibrationPoints: undefined,
+              templateOval36: undefined,
+              templateHeadCap: undefined,
               calibrationConfidence: undefined,
               calibrationQuality: undefined,
               calibrationWarnings: undefined,
@@ -275,6 +302,8 @@ export default function EditorPage() {
             category: "Short" as const,
             anchor: DEFAULT_HAIR_ANCHOR,
             calibrationPoints: processed.calibrationPoints,
+            templateOval36: processed.templateOval36,
+            templateHeadCap: processed.templateHeadCap,
             calibrationConfidence: processed.calibrationConfidence,
             calibrationQuality: processed.calibrationQuality,
             calibrationWarnings: processed.calibrationWarnings,
@@ -297,6 +326,8 @@ export default function EditorPage() {
         if (!row.calibrationPoints) continue;
         merged[row.id] = {
           points: row.calibrationPoints,
+          templateOval36: row.templateOval36,
+          templateHeadCap: row.templateHeadCap,
           confidence: row.calibrationConfidence,
           quality: row.calibrationQuality,
           warnings: row.calibrationWarnings,
@@ -325,6 +356,8 @@ export default function EditorPage() {
                   imageUrl: processed.imageUrl,
                   sourceImageUrl: sourceUrl,
                   calibrationPoints: processed.calibrationPoints,
+                  templateOval36: processed.templateOval36,
+                  templateHeadCap: processed.templateHeadCap,
                   calibrationConfidence: processed.calibrationConfidence,
                   calibrationQuality: processed.calibrationQuality,
                   calibrationWarnings: processed.calibrationWarnings,
@@ -340,6 +373,8 @@ export default function EditorPage() {
             ...map,
             [id]: {
               points: processed.calibrationPoints,
+              templateOval36: processed.templateOval36,
+              templateHeadCap: processed.templateHeadCap,
               confidence: processed.calibrationConfidence,
               quality: processed.calibrationQuality,
               warnings: processed.calibrationWarnings,
@@ -395,13 +430,35 @@ export default function EditorPage() {
               </Link>
             </div>
           )}
-          <EditorCanvas
-            hairstyle={selectedHairstyle}
-            selectedVariation={tryOnEnabled ? selectedVariation : null}
-            selectedColorHex={selectedColor?.hex ?? null}
-            sourceProfileImageUrl={sourceProfile?.imageDataUrl ?? null}
-            onExportReady={handleExportReady}
-          />
+          <div className="flex flex-1 gap-6 min-h-0">
+            <EditorCanvas
+              hairstyle={selectedHairstyle}
+              selectedVariation={tryOnEnabled ? selectedVariation : null}
+              selectedColorHex={selectedColor?.hex ?? null}
+              sourceProfileImageUrl={sourceProfile?.imageDataUrl ?? null}
+              showFaceLandmarks={showFaceLandmarks}
+              showHairLandmarks={showHairLandmarks}
+              showFaceContourDebug={showFaceContourDebug}
+              showHairContourDebug={showHairContourDebug}
+              onOverlayControlsReady={setLegacyOverlayControls}
+              fitEngine="affine"
+              title="Legacy (Affine)"
+            />
+            <EditorCanvas
+              hairstyle={selectedHairstyle}
+              selectedVariation={tryOnEnabled ? selectedVariation : null}
+              selectedColorHex={selectedColor?.hex ?? null}
+              sourceProfileImageUrl={sourceProfile?.imageDataUrl ?? null}
+              showFaceLandmarks={showFaceLandmarks}
+              showHairLandmarks={showHairLandmarks}
+              showFaceContourDebug={showFaceContourDebug}
+              showHairContourDebug={showHairContourDebug}
+              onOverlayControlsReady={setMlsOverlayControls}
+              onExportReady={handleExportReady}
+              fitEngine="mls"
+              title="Current (MLS Warp)"
+            />
+          </div>
 
           <EditorVariationTray
             variations={currentVariations}
@@ -412,23 +469,166 @@ export default function EditorPage() {
             }}
           />
 
-          {/* Re-open button when right sidebar is collapsed */}
-          {!showRightSidebar && (
-            <button
-              type="button"
-              onClick={() => setShowRightSidebar(true)}
-              className="absolute top-6 right-6 z-10 flex size-10 items-center justify-center rounded-xl bg-white border border-slate-200 shadow-lg text-slate-500 hover:text-blue-600 hover:border-blue-200 transition-colors dark:bg-slate-900 dark:border-slate-800"
-              aria-label="Open sidebar"
-            >
-              <span className="material-symbols-outlined text-xl">left_panel_open</span>
-            </button>
-          )}
         </main>
+        <aside
+          className={`shrink-0 border-l border-slate-200 bg-white transition-all duration-200 dark:border-slate-800 dark:bg-slate-900 ${
+            isDebugSidebarCollapsed ? "w-12" : "w-72"
+          }`}
+        >
+          <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between border-b border-slate-200 px-2 py-2 dark:border-slate-800">
+              {!isDebugSidebarCollapsed && (
+                <h3 className="pl-2 text-sm font-bold text-slate-800 dark:text-slate-100">Canvas Controls</h3>
+              )}
+              <button
+                type="button"
+                onClick={() => setIsDebugSidebarCollapsed((v) => !v)}
+                className="ml-auto flex size-8 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                aria-label={isDebugSidebarCollapsed ? "Expand controls sidebar" : "Collapse controls sidebar"}
+              >
+                <span className="material-symbols-outlined text-lg">
+                  {isDebugSidebarCollapsed ? "chevron_left" : "chevron_right"}
+                </span>
+              </button>
+            </div>
+            {!isDebugSidebarCollapsed && (
+              <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">Shared controls for both photo canvases.</p>
+                <label className="flex items-center justify-between rounded-lg border border-violet-200 bg-violet-50/60 px-3 py-2 text-xs font-semibold text-violet-800 dark:border-violet-800/60 dark:bg-violet-900/20 dark:text-violet-200">
+                  All detections
+                  <input
+                    type="checkbox"
+                    checked={allDetectionsEnabled}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      setShowFaceLandmarks(enabled);
+                      setShowFaceContourDebug(enabled);
+                      setShowHairLandmarks(enabled && hasHairCalibrationPoints);
+                      setShowHairContourDebug(enabled && hasTemplateContour);
+                    }}
+                    className="h-4 w-4 accent-violet-600"
+                  />
+                </label>
+                <label className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">
+                  Face landmarks
+                  <input
+                    type="checkbox"
+                    checked={showFaceLandmarks}
+                    onChange={(e) => setShowFaceLandmarks(e.target.checked)}
+                    className="h-4 w-4 accent-violet-600"
+                  />
+                </label>
+                <label
+                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-medium ${
+                    hasHairCalibrationPoints
+                      ? "border-slate-200 text-slate-700 dark:border-slate-700 dark:text-slate-200"
+                      : "border-slate-200 text-slate-400 dark:border-slate-800 dark:text-slate-500"
+                  }`}
+                >
+                  Hair landmarks
+                  <input
+                    type="checkbox"
+                    checked={showHairLandmarks}
+                    disabled={!hasHairCalibrationPoints}
+                    onChange={(e) => setShowHairLandmarks(e.target.checked)}
+                    className="h-4 w-4 accent-indigo-600 disabled:opacity-50"
+                  />
+                </label>
+                <label
+                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-medium ${
+                    hasTemplateContour
+                      ? "border-slate-200 text-slate-700 dark:border-slate-700 dark:text-slate-200"
+                      : "border-slate-200 text-slate-400 dark:border-slate-800 dark:text-slate-500"
+                  }`}
+                >
+                  36-point face landmarks
+                  <input
+                    type="checkbox"
+                    checked={showFaceContourDebug}
+                    onChange={(e) => setShowFaceContourDebug(e.target.checked)}
+                    className="h-4 w-4 accent-emerald-600 disabled:opacity-50"
+                  />
+                </label>
+                <label
+                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-xs font-medium ${
+                    hasTemplateContour
+                      ? "border-slate-200 text-slate-700 dark:border-slate-700 dark:text-slate-200"
+                      : "border-slate-200 text-slate-400 dark:border-slate-800 dark:text-slate-500"
+                  }`}
+                >
+                  36-point hair landmarks
+                  <input
+                    type="checkbox"
+                    checked={showHairContourDebug}
+                    disabled={!hasTemplateContour}
+                    onChange={(e) => setShowHairContourDebug(e.target.checked)}
+                    className="h-4 w-4 accent-pink-600 disabled:opacity-50"
+                  />
+                </label>
 
-        {/* Right sidebar: trending & challenges */}
-        {showRightSidebar && (
-          <EditorRightSidebar onClose={() => setShowRightSidebar(false)} />
-        )}
+                <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">Legacy (Affine)</h4>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => legacyOverlayControls?.decreaseOpacity()}
+                      disabled={!legacyOverlayControls}
+                      className="flex-1 rounded-md border border-slate-200 px-2 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200"
+                    >
+                      Opacity -
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => legacyOverlayControls?.increaseOpacity()}
+                      disabled={!legacyOverlayControls}
+                      className="flex-1 rounded-md border border-slate-200 px-2 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200"
+                    >
+                      Opacity +
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => legacyOverlayControls?.resetOverlay()}
+                      disabled={!legacyOverlayControls}
+                      className="rounded-md border border-slate-200 px-2 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">Current (MLS Warp)</h4>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => mlsOverlayControls?.decreaseOpacity()}
+                      disabled={!mlsOverlayControls}
+                      className="flex-1 rounded-md border border-slate-200 px-2 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200"
+                    >
+                      Opacity -
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => mlsOverlayControls?.increaseOpacity()}
+                      disabled={!mlsOverlayControls}
+                      className="flex-1 rounded-md border border-slate-200 px-2 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200"
+                    >
+                      Opacity +
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => mlsOverlayControls?.resetOverlay()}
+                      disabled={!mlsOverlayControls}
+                      className="rounded-md border border-slate-200 px-2 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </aside>
       </div>
     </div>
   );
