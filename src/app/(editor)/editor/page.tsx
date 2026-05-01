@@ -308,6 +308,7 @@ export default function EditorPage() {
             calibrationQuality: processed.calibrationQuality,
             calibrationWarnings: processed.calibrationWarnings,
             isAutoCalibrated: processed.isAutoCalibrated,
+            colorStats: processed.colorStats,
           };
         })
       );
@@ -362,6 +363,7 @@ export default function EditorPage() {
                   calibrationQuality: processed.calibrationQuality,
                   calibrationWarnings: processed.calibrationWarnings,
                   isAutoCalibrated: processed.isAutoCalibrated,
+                  colorStats: processed.colorStats,
                 }
               : h
           )

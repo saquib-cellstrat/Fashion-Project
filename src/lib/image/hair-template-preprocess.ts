@@ -5,6 +5,8 @@ import {
   type HairCalibrationPoints,
   type NormalizedPoint2,
 } from "@/lib/image/face-landmarks";
+import { computeImageColorStats } from "@/lib/image/image-color-stats";
+import type { ImageColorStatsPayload } from "@/types/editor";
 
 export type HairCalibrationQuality = "high" | "medium" | "low";
 
@@ -18,6 +20,7 @@ export type HairTemplatePreprocessResult = {
   calibrationQuality?: HairCalibrationQuality;
   calibrationWarnings?: string[];
   isAutoCalibrated: boolean;
+  colorStats?: ImageColorStatsPayload;
 };
 
 export type HairDetachMode = "balanced" | "highAccuracy";
@@ -520,6 +523,7 @@ export async function preprocessUploadedHairTemplateFromDataUrl(
   detachMode: HairDetachMode = "balanced"
 ): Promise<HairTemplatePreprocessResult> {
   const image = await loadHtmlImage(originalDataUrl);
+  const sourceColorStats = computeImageColorStats(image, { alphaThreshold: 4 }) ?? undefined;
 
   const detection = await detectFaceLandmarksNormalized(image);
   if (!detection?.landmarks?.length) {
@@ -530,6 +534,7 @@ export async function preprocessUploadedHairTemplateFromDataUrl(
       calibrationWarnings: ["No face landmarks detected in template photo"],
       calibrationQuality: "low",
       calibrationConfidence: 0.2,
+      colorStats: sourceColorStats,
     };
   }
 
@@ -556,6 +561,7 @@ export async function preprocessUploadedHairTemplateFromDataUrl(
     }
   }
   const extractedDataUrl = toDataUrl(extracted);
+  const extractedColorStats = computeImageColorStats(extracted, { alphaThreshold: 8 }) ?? sourceColorStats;
   const remappedPoints = remapCalibrationPointsToCrop(semantic, crop, image);
   const groups = extractLandmarkGroups(detection.landmarks);
   const toCropNorm = (point: NormalizedPoint2) => ({
@@ -580,6 +586,7 @@ export async function preprocessUploadedHairTemplateFromDataUrl(
     calibrationQuality: quality,
     calibrationWarnings: validation.warnings,
     isAutoCalibrated: validation.ok,
+    colorStats: extractedColorStats,
   };
 }
 
@@ -596,6 +603,7 @@ export async function preprocessUploadedHairTemplateWithFallback(file: File): Pr
       calibrationQuality: "low",
       calibrationConfidence: 0.15,
       calibrationWarnings: ["Preprocessing failed; using original upload"],
+      colorStats: undefined,
     };
   }
 }
@@ -608,6 +616,7 @@ export function extractHairTemplateFallbackPreview(file: File): Promise<HairTemp
     calibrationQuality: "low",
     calibrationConfidence: 0.15,
     calibrationWarnings: ["Using fallback template preview"],
+    colorStats: undefined,
   }));
 }
 

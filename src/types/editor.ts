@@ -33,6 +33,14 @@ export type HairAnchor = {
   heightStretch: number;
 };
 
+export type ImageColorStatsPayload = {
+  meanRgb: [number, number, number];
+  stdRgb: [number, number, number];
+  meanLuma: number;
+  stdLuma: number;
+  sampleCount: number;
+};
+
 export type HairstyleTemplate = {
   id: string;
   name: string;
@@ -51,6 +59,7 @@ export type HairstyleTemplate = {
   calibrationQuality?: "high" | "medium" | "low";
   calibrationWarnings?: string[];
   isAutoCalibrated?: boolean;
+  colorStats?: ImageColorStatsPayload;
 };
 
 export type ColorSwatch = {

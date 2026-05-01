@@ -21,6 +21,7 @@ import { useHairAutoFit } from "./use-hair-auto-fit";
 import { MLSWarpCanvas } from "./MLSWarpCanvas";
 import { type Point2 } from "@/lib/image/mlsWarp";
 import { SEMANTIC_LANDMARK_INDICES, type SemanticLandmarkId } from "@/lib/image/face-landmarks";
+import { computeImageColorStats } from "@/lib/image/image-color-stats";
 
 type Props = {
   hairstyle: HairstyleTemplate | null;
@@ -176,6 +177,19 @@ export function EditorCanvas({
       isActive = false;
     };
   }, [selectedVariation?.thumbnailUrl]);
+
+  const baseColorStats = useMemo(() => {
+    if (!baseImage) return null;
+    return computeImageColorStats(baseImage, { alphaThreshold: 4 });
+  }, [baseImage]);
+
+  const overlayColorStats = useMemo(() => {
+    if (!selectedVariation || !overlayImage) return null;
+    if (hairstyle?.colorStats?.sampleCount && hairstyle.colorStats.sampleCount > 0) {
+      return hairstyle.colorStats;
+    }
+    return computeImageColorStats(overlayImage, { alphaThreshold: 8 });
+  }, [selectedVariation, overlayImage, hairstyle]);
 
   // Fallback: detect dual contour groups directly on current hair image when template metadata is unavailable.
   useEffect(() => {
@@ -697,6 +711,8 @@ export function EditorCanvas({
           outputHeight={dimensions.height}
           warpType="affine"
           onCanvasReady={handleCanvasReady}
+          baseColorStats={baseColorStats}
+          hairColorStats={overlayColorStats}
         />
       )}
 
